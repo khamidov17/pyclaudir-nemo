@@ -1,7 +1,7 @@
 name: nemo_app
 description: Nemo — your private AI assistant on Android & iOS
 publish_to: none
-version: 1.0.0+1
+version: 1.0.16+16
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -35,6 +35,7 @@ dependencies:
   http: ^1.2.0
   open_file: ^3.3.2
   path_provider: ^2.1.0
+  package_info_plus: ^8.1.0
 
   # Audio playback for Edge TTS voice responses
   just_audio: ^0.9.40
