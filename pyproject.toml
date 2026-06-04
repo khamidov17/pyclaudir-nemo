@@ -10,7 +10,7 @@ authors = [{ name = "rustam_z" }]
 dependencies = [
     "python-telegram-bot>=21.6,<22",
     "mcp>=1.2.0",
-    "uvicorn>=0.30",
+    "uvicorn[standard]>=0.30",
     "starlette>=0.37",
     "aiosqlite>=0.20",
     "pydantic>=2.7",
