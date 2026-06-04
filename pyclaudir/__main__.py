@@ -659,6 +659,7 @@ async def _async_main() -> None:
         db=db,
         typing_action=_typing,
         error_notify=_error_notify,
+        ctx=ctx,
     )
     await engine.start()
     if app_api is not None:

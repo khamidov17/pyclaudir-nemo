@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../app_version.dart';
 import '../models/message.dart';
 import '../services/nemo_service.dart';
 import '../services/update_service.dart';
-import '../services/voice_chat_service.dart';
 import '../services/voice_service.dart';
 import '../services/wake_word_service.dart';
 import '../widgets/chat_bubble.dart';
@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen>
   final ScrollController _scroll = ScrollController();
   late AnimationController _pulseCtrl;
   late Animation<double> _pulse;
+  StreamSubscription? _errorSub;
 
   @override
   void initState() {
@@ -52,6 +53,12 @@ class _HomeScreenState extends State<HomeScreen>
     final wake = context.read<WakeWordService>();
 
     await voice.init();
+    _errorSub = nemo.errors.listen((message) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    });
     await nemo.connect();
 
     nemo.messages.listen((text) {
@@ -154,12 +161,13 @@ class _HomeScreenState extends State<HomeScreen>
                 shape: BoxShape.circle,
                 color: nemo.isConnected ? Colors.greenAccent : Colors.redAccent,
                 boxShadow: nemo.isConnected
-                    ? [BoxShadow(color: Colors.greenAccent.withOpacity(0.5), blurRadius: 6)]
+                    ? [BoxShadow(color: Colors.greenAccent.withValues(alpha: 0.5), blurRadius: 6)]
                     : [],
               ),
             ),
             const SizedBox(width: 8),
-            const Text('Nemo', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('Nemo $nemoVersionLabel',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(width: 6),
             if (nemo.state == NemoState.thinking)
               const Text('thinking…',
@@ -310,7 +318,7 @@ class _HomeScreenState extends State<HomeScreen>
                               : const Color(0xFF1E1E2E),
                           boxShadow: voice.isListening
                               ? [BoxShadow(
-                                  color: primary.withOpacity(0.5),
+                                  color: primary.withValues(alpha: 0.5),
                                   blurRadius: 12,
                                   spreadRadius: 2,
                                 )]
@@ -335,6 +343,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _pulseCtrl.dispose();
+    _errorSub?.cancel();
     _textCtrl.dispose();
     _scroll.dispose();
     super.dispose();

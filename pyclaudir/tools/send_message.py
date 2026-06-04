@@ -131,6 +131,16 @@ class SendMessageTool(BaseTool):
                 name="nemo-tts",
             )
 
+        # App-originated turns: the app already got the reply via the
+        # broadcast above. Don't echo it into the owner's Telegram DM (the
+        # app submits with chat_id == owner_id, so a Telegram send here would
+        # duplicate the message in Telegram). See ToolContext.app_origin_chats.
+        if args.chat_id in getattr(self.ctx, "app_origin_chats", set()):
+            return ToolResult(
+                content="delivered to app (telegram suppressed for app-origin turn)",
+                data={"chat_id": args.chat_id, "message_ids": []},
+            )
+
         # Send to Telegram — may fail if user hasn't opened bot DM yet.
         message_ids: list[int] = []
         for i, body in enumerate(bodies):

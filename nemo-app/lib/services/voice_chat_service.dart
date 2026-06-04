@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:record/record.dart';
@@ -26,7 +25,6 @@ class VoiceChatService extends ChangeNotifier {
   AudioRecorder? _recorder;
   StreamSubscription? _recorderSub;
   StreamSubscription? _wsSub;
-
   bool _active = false;
   bool get isActive => _active;
 
@@ -37,45 +35,66 @@ class VoiceChatService extends ChangeNotifier {
   final StreamController<Uint8List> _audioOut = StreamController.broadcast();
   Stream<Uint8List> get audioOut => _audioOut.stream;
 
-  Future<void> start(String serverHost) async {
-    if (_active) return;
+  final StreamController<String> _errors = StreamController.broadcast();
+  Stream<String> get errors => _errors.stream;
 
-    final uri = Uri.parse('ws://$serverHost:3002');
-    _ws = WebSocketChannel.connect(uri);
-    await _ws!.ready;
+  Future<bool> start(String serverHost) async {
+    if (_active) return true;
+
+    final uri = _voiceUri(serverHost);
+    try {
+      _ws = WebSocketChannel.connect(uri);
+      await _ws!.ready.timeout(const Duration(seconds: 8));
+    } catch (e) {
+      _errors.add('Voice server is not reachable. Check nemo-voice service.');
+      await stop();
+      return false;
+    }
 
     // Authenticate with same token as main app
     final token = await _storage.read(key: 'app_token') ?? '';
     _ws!.sink.add(jsonEncode({
       'type': 'auth',
       'token': token,
-      'user_id': 1965085976,
-      'user_name': 'Avazbek',
     }));
-
-    _active = true;
-    notifyListeners();
 
     // Listen for responses from nemo-voice
     _wsSub = _ws!.stream.listen(
       _onMessage,
-      onError: (_) => stop(),
-      onDone: () => stop(),
+      onError: (e) {
+        _errors.add('Voice connection failed: $e');
+        stop();
+      },
+      onDone: () {
+        if (_active) _errors.add('Voice server disconnected.');
+        stop();
+      },
     );
 
     // Start recording and streaming
     _recorder = AudioRecorder();
     final hasPerms = await _recorder!.hasPermission();
     if (!hasPerms) {
+      _errors.add('Microphone permission is required for voice chat.');
       await stop();
-      return;
+      return false;
     }
 
-    final stream = await _recorder!.startStream(const RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      sampleRate: 16000,
-      numChannels: 1,
-    ));
+    Stream<Uint8List> stream;
+    try {
+      stream = await _recorder!.startStream(const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: 16000,
+        numChannels: 1,
+      ));
+    } catch (e) {
+      _errors.add('Could not start microphone stream.');
+      await stop();
+      return false;
+    }
+
+    _active = true;
+    notifyListeners();
 
     _recorderSub = stream.listen((chunk) {
       if (_ws != null && chunk.isNotEmpty) {
@@ -85,6 +104,7 @@ class VoiceChatService extends ChangeNotifier {
     });
 
     debugPrint('VoiceChatService: started → $uri');
+    return true;
   }
 
   void _onMessage(dynamic raw) {
@@ -108,6 +128,18 @@ class VoiceChatService extends ChangeNotifier {
     }
   }
 
+  Uri _voiceUri(String server) {
+    final trimmed = server.trim();
+    final parsed = Uri.tryParse(trimmed);
+    final fromFullUrl = parsed != null && parsed.host.isNotEmpty;
+    final scheme = fromFullUrl
+        ? (parsed.scheme == 'wss' || parsed.scheme == 'https' ? 'wss' : 'ws')
+        : 'ws';
+    final host = fromFullUrl ? parsed.host : trimmed.split(':').first;
+    final port = fromFullUrl ? (parsed.hasPort ? parsed.port : 3002) : 3002;
+    return Uri(scheme: scheme, host: host, port: port);
+  }
+
   Future<void> stop() async {
     _active = false;
     await _recorderSub?.cancel();
@@ -127,6 +159,7 @@ class VoiceChatService extends ChangeNotifier {
     stop();
     _transcripts.close();
     _audioOut.close();
+    _errors.close();
     super.dispose();
   }
 }

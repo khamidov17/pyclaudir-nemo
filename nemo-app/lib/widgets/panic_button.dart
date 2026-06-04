@@ -16,7 +16,7 @@ class PanicButton extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
           decoration: BoxDecoration(
-            color: Colors.red.shade900.withOpacity(0.8),
+            color: Colors.red.shade900.withValues(alpha: 0.8),
             borderRadius: BorderRadius.circular(12),
           ),
           child: const Row(mainAxisSize: MainAxisSize.min, children: [

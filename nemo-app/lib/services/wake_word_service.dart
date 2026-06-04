@@ -5,9 +5,8 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 /// On-device wake word detection — no API key, fully offline.
 ///
-/// Runs tight 6-second listening windows in a loop so it's always
-/// responsive. The Android "ding" is suppressed by the foreground
-/// service keeping the mic open continuously.
+/// Uses long listening windows. Android's built-in speech recognizer can chime
+/// whenever listening starts, so short restart loops are intentionally avoided.
 class WakeWordService extends ChangeNotifier {
   final SpeechToText _stt = SpeechToText();
   bool _running = false;
@@ -76,11 +75,12 @@ class WakeWordService extends ChangeNotifier {
               completer.complete('');
             }
           },
-          // Short windows = responsive + fewer dings
-          listenFor: const Duration(seconds: 6),
-          pauseFor: const Duration(seconds: 4),
-          cancelOnError: true,
-          partialResults: true,
+          listenOptions: SpeechListenOptions(
+            listenFor: const Duration(minutes: 5),
+            pauseFor: const Duration(seconds: 30),
+            cancelOnError: true,
+            partialResults: true,
+          ),
         );
       } catch (e) {
         debugPrint('WakeWord listen error: $e');
@@ -88,7 +88,7 @@ class WakeWordService extends ChangeNotifier {
       }
 
       final result = await completer.future.timeout(
-        const Duration(seconds: 8),
+        const Duration(minutes: 5, seconds: 2),
         onTimeout: () => '',
       );
 
@@ -101,8 +101,7 @@ class WakeWordService extends ChangeNotifier {
         // Wait for voice interaction to complete before resuming
         await Future.delayed(const Duration(seconds: 8));
       } else {
-        // Brief gap between windows to avoid back-to-back dings
-        await Future.delayed(const Duration(milliseconds: 800));
+        await Future.delayed(const Duration(seconds: 2));
       }
     }
   }

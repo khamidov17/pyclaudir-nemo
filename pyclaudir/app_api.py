@@ -212,6 +212,7 @@ class AppApiServer:
                 timestamp=datetime.now(timezone.utc),
                 text=text,
                 received_at_monotonic=time.monotonic(),
+                source="app",
             )
             log.info("app→engine device=%s: %r", device_id, text[:80])
             await self._engine.submit(cm)  # type: ignore[union-attr]

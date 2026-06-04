@@ -80,6 +80,11 @@ class ToolContext:
     #: Connected mobile app WebSocket clients. send_message broadcasts to these
     #: in addition to Telegram so the app sees Nemo's replies in real-time.
     app_clients: set = field(default_factory=set)
+    #: chat_ids whose in-flight turn originated from the mobile app. The
+    #: engine sets this at turn start; ``send_message`` uses it to skip the
+    #: Telegram send (the app already received the reply via broadcast) so an
+    #: app-originated chat isn't echoed into the owner's Telegram DM.
+    app_origin_chats: set = field(default_factory=set)
     #: Phone action broker — set when NEMO_APP_TOKEN is configured.
     phone_broker: Any = None
 

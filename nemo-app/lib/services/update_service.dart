@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
 const _storage = FlutterSecureStorage(
@@ -108,8 +109,14 @@ class UpdateService extends ChangeNotifier {
   }
 
   Future<int> _getInstalledVersion() async {
-    final v = await _storage.read(key: _versionKey);
-    return int.tryParse(v ?? '') ?? 1;
+    final stored = int.tryParse(await _storage.read(key: _versionKey) ?? '') ?? 0;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final buildNumber = int.tryParse(info.buildNumber) ?? 0;
+      return buildNumber > stored ? buildNumber : stored;
+    } catch (_) {
+      return stored > 0 ? stored : 1;
+    }
   }
 
   Future<void> _markInstalled(int version) async {

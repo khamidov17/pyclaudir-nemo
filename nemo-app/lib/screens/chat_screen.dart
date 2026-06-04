@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
+import '../app_version.dart';
 import '../models/chat_session.dart';
 import '../models/message.dart';
 import '../services/chat_storage.dart';
@@ -31,6 +32,7 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _thinking = false;
   late StreamSubscription _msgSub;
   late StreamSubscription _audioSub;
+  late StreamSubscription _errorSub;
   late RecordingService _rec;
   final _imagePicker = ImagePicker();
 
@@ -43,6 +45,13 @@ class _ChatScreenState extends State<ChatScreen> {
     _msgSub = nemo.messages.listen(_onNemoReply);
     _audioSub = nemo.audioB64.listen((b64) {
       context.read<VoiceService>().playAudio(b64);
+    });
+    _errorSub = nemo.errors.listen((message) {
+      if (!mounted) return;
+      setState(() => _thinking = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
     });
   }
 
@@ -102,7 +111,8 @@ class _ChatScreenState extends State<ChatScreen> {
     _ctrl.clear();
     _addMessage(text, Sender.user);
     setState(() => _thinking = true);
-    await context.read<NemoService>().send(text);
+    final sent = await context.read<NemoService>().send(text);
+    if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _sendImage() async {
@@ -120,8 +130,9 @@ class _ChatScreenState extends State<ChatScreen> {
 
     // Ask Nemo about the image
     setState(() => _thinking = true);
-    await context.read<NemoService>().sendWithMedia(
+    final sent = await context.read<NemoService>().sendWithMedia(
       '[Image attached — please describe and analyze it]', b64, 'image/jpeg');
+    if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _takePhoto() async {
@@ -136,8 +147,9 @@ class _ChatScreenState extends State<ChatScreen> {
     _addMessage('', Sender.user,
         type: MessageType.image, mediaPath: dest);
     setState(() => _thinking = true);
-    await context.read<NemoService>().sendWithMedia(
+    final sent = await context.read<NemoService>().sendWithMedia(
       '[Photo taken — please describe it]', b64, 'image/jpeg');
+    if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _sendFile() async {
@@ -157,9 +169,10 @@ class _ChatScreenState extends State<ChatScreen> {
           type: MessageType.recording);
       // Save to Nemo memory automatically
       setState(() => _thinking = true);
-      await context.read<NemoService>().send(
+      final sent = await context.read<NemoService>().send(
         'I just recorded a ${dur}s conversation. Please save this to memory '
         'and summarize what was discussed:\n\n$transcript');
+      if (!sent && mounted) setState(() => _thinking = false);
     } else {
       await _rec.startRecording();
       setState(() {});
@@ -215,7 +228,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
           const SizedBox(width: 8),
-          const Text('Nemo', style: TextStyle(fontWeight: FontWeight.bold)),
+          const Text('Nemo $nemoVersionLabel',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           if (_thinking) ...[
             const SizedBox(width: 8),
             const SizedBox(width: 12, height: 12,
@@ -309,6 +323,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _msgSub.cancel();
     _audioSub.cancel();
+    _errorSub.cancel();
     _ctrl.dispose();
     _scroll.dispose();
     _rec.dispose();

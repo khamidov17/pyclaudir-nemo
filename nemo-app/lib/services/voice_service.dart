@@ -67,10 +67,12 @@ class VoiceService extends ChangeNotifier {
           }
         }
       },
-      listenFor: timeout,
-      pauseFor: const Duration(seconds: 3),
-      localeId: 'en_US',
-      cancelOnError: true,
+      listenOptions: SpeechListenOptions(
+        listenFor: timeout,
+        pauseFor: const Duration(seconds: 3),
+        localeId: 'en_US',
+        cancelOnError: true,
+      ),
     );
 
     // Timeout fallback

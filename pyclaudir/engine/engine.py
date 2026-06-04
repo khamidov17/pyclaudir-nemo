@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..cc_failure_classifier import CcFailureClassification, classify_cc_failure
 from ..config import Config
@@ -108,10 +108,14 @@ class Engine:
         db: "Database | None" = None,
         typing_action: TypingAction | None = None,
         error_notify: ErrorNotify | None = None,
+        ctx: Any = None,
     ) -> None:
         self._worker = worker
         self._debounce = debounce_ms / 1000.0
         self._db = db
+        #: Shared ToolContext. Used only to flag app-originated turns so
+        #: ``send_message`` can suppress the Telegram echo for them.
+        self._ctx = ctx
         # Cache hot-path knobs so the control loop and dropped-text
         # handler don't dereference Config on every event.
         self._tool_error_max_count: int = config.tool_error_max_count
@@ -238,6 +242,13 @@ class Engine:
         # the turn-start typing indicator should be silent for
         # reminder-only turns.
         self._turn.active_chats = {m.chat_id for m in batch if m.message_id > 0}
+        # Mark which chats' replies should NOT be echoed to Telegram because
+        # the turn came from the mobile app. Overwritten every turn, so a
+        # following Telegram turn clears it.
+        if self._ctx is not None:
+            self._ctx.app_origin_chats = {
+                m.chat_id for m in batch if getattr(m, "source", "telegram") == "app"
+            }
         self._turn.dropped_text_retries = 0
         xml = await format_messages_with_context(batch, self._db)
         log.info("starting turn with %d msgs", len(batch))

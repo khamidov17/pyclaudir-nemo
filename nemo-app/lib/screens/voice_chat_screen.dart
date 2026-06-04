@@ -1,3 +1,5 @@
+// ignore_for_file: experimental_member_use
+
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -29,6 +31,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   final List<String> _log = [];
   StreamSubscription? _transcriptSub;
   StreamSubscription? _audioSub;
+  StreamSubscription? _errorSub;
 
   // Buffer for incoming PCM audio chunks (24kHz)
   final List<Uint8List> _audioBuffer = [];
@@ -51,6 +54,13 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
       setState(() => _log.add(t));
     });
     _audioSub = _voice.audioOut.listen(_bufferAudio);
+    _errorSub = _voice.errors.listen((message) {
+      if (!mounted) return;
+      setState(() => _log.add(message));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    });
   }
 
   void _bufferAudio(Uint8List chunk) {
@@ -82,8 +92,11 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     if (_voice.isActive) {
       await _voice.stop();
     } else {
-      await _voice.start(widget.serverHost);
-      setState(() => _log.add('Voice chat started — speak now'));
+      final started = await _voice.start(widget.serverHost);
+      if (!mounted) return;
+      if (started) {
+        setState(() => _log.add('Voice chat started - speak now'));
+      }
     }
   }
 
@@ -182,6 +195,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     _voice.dispose();
     _transcriptSub?.cancel();
     _audioSub?.cancel();
+    _errorSub?.cancel();
     _player.dispose();
     _pulse.dispose();
     _playTimer?.cancel();

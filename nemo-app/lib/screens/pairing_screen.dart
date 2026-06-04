@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../app_version.dart';
 import 'home_screen.dart';
 
 const _storage = FlutterSecureStorage(
@@ -56,9 +57,21 @@ class _PairingScreenState extends State<PairingScreen> {
             children: [
               const Text('👋', style: TextStyle(fontSize: 48)),
               const SizedBox(height: 16),
-              const Text('Pair with Nemo',
-                  style: TextStyle(color: Colors.white, fontSize: 28,
-                      fontWeight: FontWeight.bold)),
+              const Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text('Pair with Nemo',
+                      style: TextStyle(color: Colors.white, fontSize: 28,
+                          fontWeight: FontWeight.bold)),
+                  SizedBox(width: 8),
+                  Padding(
+                    padding: EdgeInsets.only(bottom: 3),
+                    child: Text(nemoVersionLabel,
+                        style: TextStyle(color: Colors.white38, fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               const Text('Enter your server address and the token from .env',
                   style: TextStyle(color: Colors.white54, fontSize: 14)),

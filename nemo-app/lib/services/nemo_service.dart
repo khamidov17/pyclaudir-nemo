@@ -10,6 +10,9 @@ class NemoService extends ChangeNotifier {
   NemoState _state = NemoState.disconnected;
   WebSocketChannel? _channel;
   StreamSubscription? _sub;
+  Completer<void>? _connectAck;
+  bool _manualDisconnect = false;
+  Timer? _reconnectTimer;
 
   String _serverUrl = '';
   String _token = '';
@@ -18,10 +21,14 @@ class NemoService extends ChangeNotifier {
   NemoState get state => _state;
   bool get isConnected => _state == NemoState.connected || _state == NemoState.thinking;
   String get serverUrl => _serverUrl;
+  bool get isConfigured => _serverUrl.trim().isNotEmpty && _token.trim().isNotEmpty;
 
   // Incoming Nemo text replies
   final StreamController<String> _messages = StreamController.broadcast();
   Stream<String> get messages => _messages.stream;
+
+  final StreamController<String> _errors = StreamController.broadcast();
+  Stream<String> get errors => _errors.stream;
 
   // Incoming action commands from backend → phone executes
   final StreamController<Map<String, dynamic>> _actions =
@@ -38,15 +45,26 @@ class NemoService extends ChangeNotifier {
     _deviceId = deviceId.isNotEmpty
         ? deviceId
         : 'phone-${DateTime.now().millisecondsSinceEpoch}';
+    _manualDisconnect = false;
   }
 
   Future<void> connect() async {
-    if (_state == NemoState.connecting || isConnected) return;
+    if (_state == NemoState.connecting) {
+      try {
+        await _connectAck?.future.timeout(const Duration(seconds: 8));
+      } catch (_) {}
+      return;
+    }
+    if (isConnected) return;
+    if (!isConfigured) {
+      _errors.add('Nemo is not paired. Add server URL and token in Settings.');
+      return;
+    }
     _setState(NemoState.connecting);
 
     try {
       // Token sent in first message, not URL — avoids proxy/log leakage
-      final uri = Uri.parse('$_serverUrl/ws?device_id=$_deviceId');
+      final uri = _wsUri();
       _channel = WebSocketChannel.connect(uri);
       await _channel!.ready;
       // Stay "connecting" until the server's auth-gated "connected" frame
@@ -60,14 +78,17 @@ class NemoService extends ChangeNotifier {
         'device_id': _deviceId,
       }));
 
+      _connectAck = Completer<void>();
       _sub = _channel!.stream.listen(
         _onData,
-        onError: (_) => _reconnect(),
-        onDone: _reconnect,
+        onError: (error) => _handleDisconnect('Connection error: $error'),
+        onDone: () => _handleDisconnect('Disconnected from Nemo server.'),
       );
+      await _connectAck!.future.timeout(const Duration(seconds: 8));
     } catch (e) {
       debugPrint('NemoService connect error: $e');
-      _reconnect();
+      _errors.add('Could not connect to Nemo. Check that the server is running.');
+      _handleDisconnect(null);
     }
   }
 
@@ -79,6 +100,9 @@ class NemoService extends ChangeNotifier {
       switch (type) {
         case 'connected':
           _setState(NemoState.connected);
+          if (_connectAck != null && !_connectAck!.isCompleted) {
+            _connectAck!.complete();
+          }
 
         case 'message':
           final text = data['text'] as String? ?? '';
@@ -104,23 +128,31 @@ class NemoService extends ChangeNotifier {
     }
   }
 
-  Future<void> send(String text) async {
+  Future<bool> send(String text) async {
     if (!isConnected) await connect();
-    if (_channel == null) return;
+    if (!isConnected || _channel == null) {
+      _errors.add('Message not sent. Nemo server is not connected.');
+      return false;
+    }
     _channel!.sink.add(jsonEncode({'type': 'message', 'text': text}));
     _setState(NemoState.thinking);
+    return true;
   }
 
   /// Send a message with a media attachment (image/PDF as base64).
-  Future<void> sendWithMedia(String text, String b64, String mimeType) async {
+  Future<bool> sendWithMedia(String text, String b64, String mimeType) async {
     if (!isConnected) await connect();
-    if (_channel == null) return;
+    if (!isConnected || _channel == null) {
+      _errors.add('Media not sent. Nemo server is not connected.');
+      return false;
+    }
     _channel!.sink.add(jsonEncode({
       'type': 'message',
       'text': text,
       'media': {'data': b64, 'mime': mimeType},
     }));
     _setState(NemoState.thinking);
+    return true;
   }
 
   /// Send action result back to backend after phone executes a command.
@@ -130,7 +162,7 @@ class NemoService extends ChangeNotifier {
       _channel!.sink.add(jsonEncode({'type': 'panic'}));
       debugPrint('Panic signal sent');
     } catch (_) {}
-    _reconnect(); // Disconnect immediately
+    disconnect();
   }
 
   void sendActionResult(String actionId, {bool ok = true, String? text, String? error, String? imageB64}) {
@@ -146,16 +178,38 @@ class NemoService extends ChangeNotifier {
     _channel!.sink.add(jsonEncode(result));
   }
 
-  void _reconnect() {
+  Uri _wsUri() {
+    final base = Uri.parse(_serverUrl.trim());
+    final path = base.path.endsWith('/ws') ? base.path : '${base.path}/ws';
+    return base.replace(path: path, queryParameters: {
+      ...base.queryParameters,
+      'device_id': _deviceId,
+    });
+  }
+
+  void _handleDisconnect(String? reason) {
     _sub?.cancel();
     _channel?.sink.close(status.goingAway);
     _channel = null;
     _sub = null;
+    if (_connectAck != null && !_connectAck!.isCompleted) {
+      _connectAck!.completeError(reason ?? 'disconnected');
+    }
+    _connectAck = null;
     _setState(NemoState.disconnected);
-    // Reconnect after 3s
-    Future.delayed(const Duration(seconds: 3), () {
-      if (_state == NemoState.disconnected) connect();
-    });
+    if (reason != null) _errors.add(reason);
+    if (!_manualDisconnect && isConfigured) {
+      _reconnectTimer?.cancel();
+      _reconnectTimer = Timer(const Duration(seconds: 5), () {
+        if (_state == NemoState.disconnected) connect();
+      });
+    }
+  }
+
+  void disconnect() {
+    _manualDisconnect = true;
+    _reconnectTimer?.cancel();
+    _handleDisconnect(null);
   }
 
   void _setState(NemoState s) {
@@ -167,8 +221,10 @@ class NemoService extends ChangeNotifier {
   @override
   void dispose() {
     _sub?.cancel();
+    _reconnectTimer?.cancel();
     _channel?.sink.close(status.goingAway);
     _messages.close();
+    _errors.close();
     _actions.close();
     _audio.close();
     super.dispose();

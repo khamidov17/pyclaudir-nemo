@@ -49,14 +49,11 @@
             android:foregroundServiceType="microphone"
             android:exported="false"/>
 
-        <!-- Auto-start on boot -->
-        <receiver
-            android:name="com.pravera.flutter_foreground_task.receiver.BootReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED"/>
-            </intent-filter>
-        </receiver>
+        <!-- Boot/restart auto-start is handled by the plugin's own merged
+             manifest (com.pravera.flutter_foreground_task.service.RebootReceiver
+             + RestartReceiver). Do NOT declare a BootReceiver here — that class
+             does not exist in flutter_foreground_task 8.x and crashes with
+             ClassNotFoundException. -->
 
         <!-- Nemo Accessibility Service for UI control -->
         <service

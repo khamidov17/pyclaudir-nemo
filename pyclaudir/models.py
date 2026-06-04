@@ -42,6 +42,13 @@ class ChatMessage(BaseModel):
     #: Rendered as a ``<memory_context>`` block inside the ``<msg>`` envelope.
     #: Not persisted — lives only between dispatcher and engine.
     memory_context: str | None = Field(default=None, exclude=True)
+    #: Where this message came from. ``"app"`` for the Nemo mobile app
+    #: WebSocket bridge, ``"telegram"`` for normal Telegram updates. The
+    #: engine uses it so a reply to an app-originated turn is broadcast to
+    #: the app only and not also echoed into the owner's Telegram DM (the
+    #: app submits with ``chat_id == owner_id``, which collides with the
+    #: Telegram DM). In-memory only; not persisted.
+    source: Literal["telegram", "app"] = Field(default="telegram", exclude=True)
 
 
 class ControlAction(BaseModel):
