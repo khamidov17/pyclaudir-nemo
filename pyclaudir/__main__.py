@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ from pathlib import Path
 from .access import AccessConfig, load_access, save_access
 from .storage.attachments import AttachmentStore
 from .cc_schema import schema_json
-from .cc_worker import CcSpawnSpec, CcWorker
+from .cc_worker import CORE_ALLOWED_TOOLS, CcSpawnSpec, CcWorker
 from .config import Config
 from .db.database import Database
 from .db.messages import insert_tool_call
@@ -37,7 +38,10 @@ from .db.reminders import (
 )
 from .engine import Engine
 from .instructions_store import InstructionsStore
+from .app_api import AppApiServer
 from .mcp_server import McpServer
+from .phone_broker import PhoneBroker
+from .nemo_router import NemoRouter, RouterConfig
 from .storage.memory import MemoryStore
 from .plugins import Plugins, load_plugins
 from .rate_limiter import RateLimiter
@@ -73,6 +77,8 @@ def _setup_logging() -> None:
 
 
 _SELF_REFLECTION_KEY = "self-reflection-default"
+_PROFILE_SYNTHESIS_KEY = "profile-synthesis-default"
+_MEMORY_CONSOLIDATION_KEY = "memory-consolidation-default"
 
 
 async def _seed_default_reminders(db, config) -> None:
@@ -92,36 +98,116 @@ async def _seed_default_reminders(db, config) -> None:
             "self-reflection reminder: %d pending row(s) active, skipping seed",
             existing,
         )
+    else:
+        cron_expr = config.self_reflection_cron
+        # Compute the first trigger time from the cron expression if croniter
+        # is available; otherwise default to "now" so the reminder loop will
+        # pick it up immediately.
+        first_trigger = datetime.now(timezone.utc)
+        try:
+            from croniter import croniter
+
+            first_trigger = croniter(cron_expr, first_trigger).get_next(datetime)
+        except ImportError:  # pragma: no cover
+            log.warning(
+                "croniter not installed, self-reflection reminder set to trigger now"
+            )
+
+        await insert_auto_seeded_reminder(
+            db,
+            auto_seed_key=_SELF_REFLECTION_KEY,
+            chat_id=config.owner_id,
+            user_id=-1,  # synthetic pseudo-user (same convention as reminder loop)
+            text='<skill name="self-reflection">run</skill>',
+            trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
+            cron_expr=cron_expr,
+        )
+        log.info(
+            "seeded default self-reflection reminder (cron=%s, next=%s UTC)",
+            cron_expr,
+            first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    # Always check these — re-seeds if deleted between restarts
+    await _seed_profile_synthesis_reminder(db, config)
+    await _seed_memory_consolidation_reminder(db, config)
+
+
+async def _seed_profile_synthesis_reminder(db, config) -> None:
+    """Seed the daily profile synthesis reminder (ABOUT_ME.md auto-refresh).
+
+    Runs at 23:59 Tashkent (18:59 UTC) by default. Re-seeded on every startup if missing,
+    same pattern as the self-reflection reminder.
+    """
+    existing = await pending_with_auto_seed_key(db, _PROFILE_SYNTHESIS_KEY)
+    if existing > 0:
+        log.info("profile-synthesis reminder: %d active, skipping seed", existing)
         return
 
-    cron_expr = config.self_reflection_cron
-    # Compute the first trigger time from the cron expression if croniter
-    # is available; otherwise default to "now" so the reminder loop will
-    # pick it up immediately.
+    cron_expr = config.profile_synthesis_cron
     first_trigger = datetime.now(timezone.utc)
     try:
         from croniter import croniter
 
         first_trigger = croniter(cron_expr, first_trigger).get_next(datetime)
     except ImportError:  # pragma: no cover
-        log.warning(
-            "croniter not installed, self-reflection reminder set to trigger now"
-        )
+        pass
 
     await insert_auto_seeded_reminder(
         db,
-        auto_seed_key=_SELF_REFLECTION_KEY,
+        auto_seed_key=_PROFILE_SYNTHESIS_KEY,
         chat_id=config.owner_id,
-        user_id=-1,  # synthetic pseudo-user (same convention as reminder loop)
-        text='<skill name="self-reflection">run</skill>',
+        user_id=-1,
+        text=(
+            "Daily profile refresh: call synthesize_memory_wiki to read all memories, "
+            "then write or update ABOUT_ME.md with a comprehensive, concise profile. "
+            "Sections: Identity, Current Projects, Preferences, Relationships, Context."
+        ),
         trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
         cron_expr=cron_expr,
     )
     log.info(
-        "seeded default self-reflection reminder (cron=%s, next=%s UTC)",
+        "seeded profile-synthesis reminder (cron=%s, next=%s UTC)",
         cron_expr,
         first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
     )
+
+
+async def _seed_memory_consolidation_reminder(db, config) -> None:
+    """Seed the weekly memory consolidation reminder.
+
+    Runs every Sunday at 20:00 UTC (Monday 01:00 Tashkent). Re-seeded on
+    every startup if missing. The agent merges scattered memory files,
+    removes duplicates, and keeps the memory store clean.
+    """
+    existing = await pending_with_auto_seed_key(db, _MEMORY_CONSOLIDATION_KEY)
+    if existing > 0:
+        log.info("memory-consolidation reminder: %d active, skipping seed", existing)
+        return
+
+    cron_expr = "0 20 * * 0"  # Sunday 20:00 UTC = Monday 01:00 Tashkent
+    first_trigger = datetime.now(timezone.utc)
+    try:
+        from croniter import croniter
+
+        first_trigger = croniter(cron_expr, first_trigger).get_next(datetime)
+    except ImportError:  # pragma: no cover
+        pass
+
+    await insert_auto_seeded_reminder(
+        db,
+        auto_seed_key=_MEMORY_CONSOLIDATION_KEY,
+        chat_id=config.owner_id,
+        user_id=-1,
+        text=(
+            "Weekly memory consolidation: list all memory files, read each one, "
+            "merge files with overlapping content, remove duplicates, fix stale facts. "
+            "Then refresh ABOUT_ME.md. Keep every file concise and non-redundant."
+        ),
+        trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
+        cron_expr=cron_expr,
+    )
+    log.info("seeded memory-consolidation reminder (next=%s UTC)", first_trigger)
 
 
 def _bootstrap_access(config: Config) -> None:
@@ -162,7 +248,7 @@ def _build_stores(config: Config, db: Database, plugins: Plugins) -> _Stores:
     memory = MemoryStore(config.memories_dir)
     memory.ensure_root()
     instructions = InstructionsStore(
-        project_md_path=project_root / "prompts" / "project.md",
+        project_md_path=config.project_prompt_path,
         backup_dir=config.data_dir / "prompt_backups",
     )
     instructions.ensure_dirs()
@@ -363,6 +449,15 @@ async def _async_main() -> None:
 
     config = Config.from_env()
     config.ensure_dirs()
+
+    from pyclaudir.security import kill_marker_exists
+    if kill_marker_exists(config.data_dir):
+        logging.getLogger(__name__).warning(
+            "kill_marker present — refusing to start. Remove %s/kill_marker to restart.",
+            config.data_dir,
+        )
+        sys.exit(0)
+
     _bootstrap_access(config)
 
     db = await Database.open(config.db_path)
@@ -406,6 +501,22 @@ async def _async_main() -> None:
     await mcp.start()
     log.info("mcp server live at %s", mcp.url)
 
+    # Mobile app WebSocket bridge
+    import os
+    app_token = os.environ.get("NEMO_APP_TOKEN", "") or ""
+    app_port = int(os.environ.get("NEMO_APP_PORT", "8765") or "8765")
+    app_api: AppApiServer | None = None
+    if app_token:
+        broker = PhoneBroker(data_dir=config.data_dir)
+        ctx.phone_broker = broker
+        app_api = AppApiServer(
+            token=app_token, owner_id=config.owner_id, ctx=ctx,
+            broker=broker, data_dir=config.data_dir,
+        )
+        await app_api.start(port=app_port)
+    else:
+        log.info("NEMO_APP_TOKEN not set — mobile app bridge disabled")
+
     tmpdir = Path(tempfile.mkdtemp(prefix="pyclaudir-"))
     schema_path = tmpdir / "schema.json"
     schema_path.write_text(schema_json())
@@ -420,8 +531,8 @@ async def _async_main() -> None:
     spec = CcSpawnSpec(
         binary=config.claude_code_bin,
         model=config.model,
-        system_prompt_path=Path("prompts/system.md").resolve(),
-        project_prompt_path=Path("prompts/project.md").resolve(),
+        system_prompt_path=config.system_prompt_path,
+        project_prompt_path=config.project_prompt_path,
         mcp_config_path=mcp_config_path,
         json_schema_path=schema_path,
         effort=config.effort,
@@ -431,7 +542,8 @@ async def _async_main() -> None:
         subagents_prompt_path=Path("prompts/subagents.md").resolve(),
         enable_bash=bool(plugins.tool_groups.get("bash", False)),
         enable_code=bool(plugins.tool_groups.get("code", False)),
-        mcp_allowed_tools=tuple(mcp_allowed_tools),
+        base_allowed_tools=CORE_ALLOWED_TOOLS,
+        mcp_allowed_tools=(),
     )
 
     # Crash-callback closures reference ``engine`` / ``dispatcher`` via
@@ -511,6 +623,16 @@ async def _async_main() -> None:
         engine=None,
         chat_titles=chat_titles,
         rate_limiter=stores.rate_limiter,
+        memory_store=stores.memory,
+        external_mcp_tools=tuple(mcp_allowed_tools),
+        router=NemoRouter(
+            RouterConfig(
+                enabled=config.router_enabled,
+                claude_bin=config.claude_code_bin,
+                model=config.router_model,
+                direct_replies=config.router_direct_replies,
+            )
+        ),
     )
 
     async def _typing(chat_id: int) -> None:
@@ -539,6 +661,8 @@ async def _async_main() -> None:
         error_notify=_error_notify,
     )
     await engine.start()
+    if app_api is not None:
+        app_api.set_engine(engine)
 
     reminder_task = asyncio.create_task(
         _reminder_loop(db, engine), name="pyclaudir-reminders",
@@ -565,8 +689,12 @@ async def _async_main() -> None:
             config.session_id_path.write_text(worker.session_id)
         reminder_task.cancel()
         await dispatcher.stop()
+        if dispatcher.router is not None:
+            await dispatcher.router.close()
         await engine.stop()
         await worker.stop()
+        if app_api is not None:
+            await app_api.stop()
         await mcp.stop()
         await db.close()
         log.info("clean shutdown complete")

@@ -83,4 +83,9 @@ class AddReactionTool(BaseTool):
                 bot_user_id=bot_id,
                 emoji=emoji,
             )
+        if self.ctx.on_chat_replied is not None:
+            try:
+                self.ctx.on_chat_replied(args.chat_id)
+            except Exception:
+                pass
         return ToolResult(content=f"reacted {emoji} to {args.message_id}")

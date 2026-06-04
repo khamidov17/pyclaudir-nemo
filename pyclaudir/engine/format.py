@@ -47,11 +47,16 @@ def _format_one(message: ChatMessage, parents_xml: str = "") -> str:
         if message.input_flags
         else ""
     )
+    mem_ctx = (
+        f"<memory_context>\n{sx.escape(message.memory_context)}\n</memory_context>\n"
+        if message.memory_context
+        else ""
+    )
     return (
         f'<msg id="{message.message_id}" chat="{message.chat_id}" '
         f'user="{message.user_id}" name="{_attr(name)}" '
         f'time="{ts}"{reply_attr}{flags_attr}>\n'
-        f"{parents_xml}{body}\n</msg>"
+        f"{parents_xml}{mem_ctx}{body}\n</msg>"
     )
 
 

@@ -53,6 +53,9 @@ class FakeWorker:
     async def inject(self, text: str) -> None:
         self.injected.append(text)
 
+    async def flush_deferred_runtime_switch(self) -> None:
+        pass
+
     async def wait_for_result(self) -> TurnResult:
         item = await self._results.get()
         if isinstance(item, Exception):

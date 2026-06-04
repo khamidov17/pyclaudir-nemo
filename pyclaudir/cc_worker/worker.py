@@ -158,6 +158,11 @@ class CcWorker:
         #: for self-inflicted exits.
         self._supervisor_abort_reason: str | None = None
         self._tool_error_abort_task: asyncio.Task | None = None
+        self._pending_model: str | None = None
+        #: True when pending_model should be applied after the current turn
+        #: completes (soft switch), False/None for immediate kill (hard switch).
+        self._pending_model_deferred: bool = False
+        self._pending_runtime: dict[str, Any] | None = None
         # Raw-capture state. We open with "pending-<ts>" names if we don't
         # know the session id at start time, then rename to "<sid>.*" once
         # the system/init event tells us.
@@ -181,11 +186,13 @@ class CcWorker:
             f"{FORBIDDEN_FLAG} found in argv at spawn time — refusing to start"
         )
         enabled_features = [
-            f for f, on in (
+            f
+            for f, on in (
                 ("bash", self.spec.enable_bash),
                 ("code", self.spec.enable_code),
                 ("subagents", self.spec.enable_subagents),
-            ) if on
+            )
+            if on
         ]
         log.info(
             "spawning claude (model=%s, enabled=%s, mcp_tools=%d)",
@@ -202,12 +209,8 @@ class CcWorker:
             env={**os.environ},
             limit=4 * 1024 * 1024,  # 4 MiB – large MCP responses (e.g. GitLab)
         )
-        self._stdout_task = asyncio.create_task(
-            self._read_stdout(), name="cc-stdout"
-        )
-        self._stderr_task = asyncio.create_task(
-            self._read_stderr(), name="cc-stderr"
-        )
+        self._stdout_task = asyncio.create_task(self._read_stdout(), name="cc-stdout")
+        self._stderr_task = asyncio.create_task(self._read_stderr(), name="cc-stderr")
 
     # ------------------------------------------------------------------
     # Raw stdout/stderr capture
@@ -232,7 +235,8 @@ class CcWorker:
             self._stderr_log = self._stderr_log_path.open("a", encoding="utf-8")
             log.info(
                 "raw cc capture: stream=%s stderr=%s",
-                self._stream_log_path.name, self._stderr_log_path.name,
+                self._stream_log_path.name,
+                self._stderr_log_path.name,
             )
         except OSError:
             log.exception("failed to open cc raw-capture files; capture disabled")
@@ -312,6 +316,101 @@ class CcWorker:
             self._stderr_log.flush()
         except Exception:  # pragma: no cover
             log.exception("failed to write to cc stderr log")
+
+    def request_model(self, model: str) -> None:
+        """Schedule a model switch on the next subprocess spawn.
+
+        Sets ``_pending_model`` and triggers an intentional restart so the
+        supervisor picks up the new model immediately.
+        """
+        log.info("model override requested: %s", model)
+        self._pending_model = model
+        self._pending_model_deferred = False
+        self._supervisor_abort_reason = "model-switch"
+        asyncio.create_task(self._terminate_proc(), name="cc-model-switch")
+
+    def defer_model_switch(self, model: str) -> None:
+        """Queue a model switch to apply AFTER the current turn completes.
+
+        Unlike ``request_model``, this does NOT kill the subprocess immediately.
+        The engine calls ``flush_deferred_model_switch`` between turns.
+        """
+        log.info("model switch deferred until after current turn: %s", model)
+        self._pending_model = model
+        self._pending_model_deferred = True
+
+    async def apply_runtime(
+        self,
+        *,
+        model: str | None = None,
+        base_allowed_tools: tuple[str, ...] | None = None,
+        mcp_allowed_tools: tuple[str, ...] | None = None,
+    ) -> None:
+        """Apply a model/tool profile before a turn starts."""
+        updates: dict[str, Any] = {}
+        if model is not None and model != self.spec.model:
+            updates["model"] = model
+        if (
+            base_allowed_tools is not None
+            and base_allowed_tools != self.spec.base_allowed_tools
+        ):
+            updates["base_allowed_tools"] = base_allowed_tools
+        if (
+            mcp_allowed_tools is not None
+            and mcp_allowed_tools != self.spec.mcp_allowed_tools
+        ):
+            updates["mcp_allowed_tools"] = mcp_allowed_tools
+        if not updates:
+            return
+
+        log.info("applying runtime profile: %s", sorted(updates))
+        if self._proc is None:
+            self.spec = dataclasses.replace(self.spec, **updates)
+            await self.start()
+            return
+
+        self._pending_runtime = updates
+        self._supervisor_abort_reason = "runtime-switch"
+        await self._terminate_proc()
+        for _ in range(100):
+            if self.is_running:
+                return
+            await asyncio.sleep(0.05)
+
+    def defer_runtime_switch(
+        self,
+        *,
+        model: str | None = None,
+        base_allowed_tools: tuple[str, ...] | None = None,
+        mcp_allowed_tools: tuple[str, ...] | None = None,
+    ) -> None:
+        """Queue a runtime profile to apply between turns."""
+        self._pending_runtime = {
+            "model": model,
+            "base_allowed_tools": base_allowed_tools,
+            "mcp_allowed_tools": mcp_allowed_tools,
+        }
+        log.info("runtime switch deferred until after current turn")
+
+    async def flush_deferred_runtime_switch(self) -> None:
+        """Apply queued runtime profile. Called by the engine between turns."""
+        pending = self._pending_runtime
+        self._pending_runtime = None
+        if pending is not None:
+            await self.apply_runtime(**pending)
+            return
+        if self._pending_model and self._pending_model_deferred:
+            model = self._pending_model
+            self._pending_model = None
+            self._pending_model_deferred = False
+            await self.apply_runtime(model=model)
+
+    def flush_deferred_model_switch(self) -> None:
+        """Deprecated sync wrapper kept for callers/tests."""
+        if self._pending_model and self._pending_model_deferred:
+            asyncio.create_task(
+                self.flush_deferred_runtime_switch(), name="cc-runtime-switch"
+            )
 
     async def stop(self) -> None:
         self._stop_supervisor.set()
@@ -398,7 +497,8 @@ class CcWorker:
         while not self._stop_supervisor.is_set():
             try:
                 await asyncio.wait_for(
-                    self._stop_supervisor.wait(), timeout=self._liveness_poll,
+                    self._stop_supervisor.wait(),
+                    timeout=self._liveness_poll,
                 )
                 return  # stop requested
             except asyncio.TimeoutError:
@@ -417,7 +517,8 @@ class CcWorker:
             log.error(
                 "cc subprocess wedged mid-turn: no activity for %.0fs "
                 "(timeout=%.0fs). Terminating to trigger respawn.",
-                silence, timeout,
+                silence,
+                timeout,
             )
             self._supervisor_abort_reason = "liveness-wedge"
             await self._terminate_proc()
@@ -457,8 +558,24 @@ class CcWorker:
             if intentional is not None:
                 log.info(
                     "cc subprocess exited rc=%s on intentional %s — respawning",
-                    rc, intentional,
+                    rc,
+                    intentional,
                 )
+                if self._pending_runtime is not None:
+                    self.spec = dataclasses.replace(
+                        self.spec, **self._pending_runtime
+                    )
+                    log.info(
+                        "applying pending runtime profile: %s",
+                        sorted(self._pending_runtime),
+                    )
+                    self._pending_runtime = None
+                if self._pending_model is not None:
+                    self.spec = dataclasses.replace(
+                        self.spec, model=self._pending_model
+                    )
+                    log.info("applying pending model override: %s", self._pending_model)
+                    self._pending_model = None
                 await asyncio.sleep(self._crash_backoff_base)
                 await self._terminate_proc()
                 await self.start()
@@ -502,7 +619,8 @@ class CcWorker:
         raise :class:`CrashLoop` if the budget is exhausted."""
         log.error(
             "cc subprocess exited rc=%s; recent stderr=%s",
-            rc, self._stderr_tail[-5:],
+            rc,
+            self._stderr_tail[-5:],
         )
         now = time.monotonic()
         self._crash_times = [
@@ -593,7 +711,6 @@ class CcWorker:
         except (BrokenPipeError, ConnectionResetError):
             log.warning("inject failed: stdin closed; queueing for next turn")
             await self._inject_queue.put(text)
-
 
     # ------------------------------------------------------------------
     # Background readers
@@ -712,8 +829,11 @@ class CcWorker:
             "cc tool-error circuit breaker tripped (reason=%s): "
             "%d errors in %.1fs (max=%d, window=%.0fs). "
             "Terminating to trigger respawn.",
-            reason, self._turn_tool_error_count, elapsed,
-            self._tool_error_max_count, self._tool_error_window,
+            reason,
+            self._turn_tool_error_count,
+            elapsed,
+            self._tool_error_max_count,
+            self._tool_error_window,
         )
         self._supervisor_abort_reason = "tool-error-limit"
         # Unblock the engine's ``wait_for_result`` immediately with a
@@ -724,7 +844,8 @@ class CcWorker:
         self._result_queue.put_nowait(sentinel)
         self._current_turn = None
         self._tool_error_abort_task = asyncio.create_task(
-            self._terminate_proc(), name="cc-tool-error-abort",
+            self._terminate_proc(),
+            name="cc-tool-error-abort",
         )
 
     def _handle_event(self, event: dict[str, Any]) -> None:
@@ -758,7 +879,9 @@ class CcWorker:
             self._on_result_event(event)
 
     def _relay_top_level_error(
-        self, event: dict[str, Any], etype: str | None,
+        self,
+        event: dict[str, Any],
+        etype: str | None,
     ) -> None:
         """Generic relay of any error-shaped top-level field.
 
@@ -778,7 +901,9 @@ class CcWorker:
         if err_bits:
             log.error(
                 "cc reported error in %s/%s event: %s",
-                etype, event.get("subtype") or "-", ", ".join(err_bits),
+                etype,
+                event.get("subtype") or "-",
+                ", ".join(err_bits),
             )
 
     def _on_system_init(self, event: dict[str, Any]) -> None:
@@ -796,7 +921,8 @@ class CcWorker:
                 log.error(
                     "mcp server %s did not connect (status=%s) — its "
                     "tools won't be available this session",
-                    server.get("name", "?"), status,
+                    server.get("name", "?"),
+                    status,
                 )
 
     def _on_assistant_event(self, event: dict[str, Any]) -> None:
@@ -857,8 +983,7 @@ class CcWorker:
         if isinstance(raw, list):
             # Sometimes a list of {"type":"text","text":...}
             text = " ".join(
-                (b.get("text", "") if isinstance(b, dict) else str(b))
-                for b in raw
+                (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw
             )
         else:
             text = "" if raw is None else str(raw)
@@ -908,7 +1033,11 @@ class CcWorker:
         payload = (
             event.get("result")
             or event.get("output")
-            or (self._current_turn.text_blocks[-1] if self._current_turn.text_blocks else None)
+            or (
+                self._current_turn.text_blocks[-1]
+                if self._current_turn.text_blocks
+                else None
+            )
         )
         if isinstance(payload, str):
             try:

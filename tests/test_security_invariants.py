@@ -100,9 +100,14 @@ def test_invariant_1_argv_default_locks_down_dangerous_tools(
     argv = build_argv(fake_spec)
     allowed_value, deny_value, _sp = _split_argv(argv)
 
-    # Base allowlist is present.
-    assert "mcp__pyclaudir" in allowed_value
-    assert "WebFetch" in allowed_value
+    # Base allowlist is present, but the whole pyclaudir namespace is not.
+    assert "mcp__pyclaudir__send_message" in allowed_value
+    assert "mcp__pyclaudir__set_reminder" in allowed_value
+    assert "mcp__pyclaudir," not in allowed_value
+    # WebFetch (CC built-in) is intentionally absent — mcp__pyclaudir__fetch_url
+    # is the SSRF-safe replacement. WebSearch is still allowed for fresh info.
+    assert "WebFetch" not in allowed_value
+    assert "mcp__pyclaudir__fetch_url" in allowed_value
     assert "WebSearch" in allowed_value
 
     # No integration tools by default. ``fake_spec`` ships with

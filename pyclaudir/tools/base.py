@@ -77,6 +77,11 @@ class ToolContext:
     #: the message in their hand — not when the entire CC turn officially
     #: ends, which can be 5-10 seconds later.
     on_chat_replied: Any = None  # Callable[[int], None] | None — kept untyped to avoid an import
+    #: Connected mobile app WebSocket clients. send_message broadcasts to these
+    #: in addition to Telegram so the app sees Nemo's replies in real-time.
+    app_clients: set = field(default_factory=set)
+    #: Phone action broker — set when NEMO_APP_TOKEN is configured.
+    phone_broker: Any = None
 
 
 @dataclass

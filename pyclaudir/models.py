@@ -38,6 +38,10 @@ class ChatMessage(BaseModel):
     #: envelope so it can refuse obfuscated requests on-character. Not
     #: persisted — lives only in-memory between dispatcher and engine.
     input_flags: frozenset[str] = Field(default_factory=frozenset, exclude=True)
+    #: Relevant memory snippets injected by the contextual memory module.
+    #: Rendered as a ``<memory_context>`` block inside the ``<msg>`` envelope.
+    #: Not persisted — lives only between dispatcher and engine.
+    memory_context: str | None = Field(default=None, exclude=True)
 
 
 class ControlAction(BaseModel):

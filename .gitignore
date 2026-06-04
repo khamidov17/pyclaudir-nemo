@@ -15,6 +15,9 @@ data/
 # Env
 .env
 .env.local
+*.keystore
+*.jks
+key.properties
 
 # Project-specific prompt (not shipped with open-source pyclaudir)
 prompts/project.md
@@ -34,3 +37,21 @@ access.json
 .vscode/
 .idea/
 .DS_Store
+
+# Flutter / Android generated output
+nemo-app/.dart_tool/
+nemo-app/.flutter-plugins
+nemo-app/.flutter-plugins-dependencies
+nemo-app/build/
+nemo-app/android/.gradle/
+nemo-app/android/local.properties
+nemo-app/android/app/*.apk
+nemo-app/android/app/*.aab
+nemo-app/ios/Flutter/Generated.xcconfig
+nemo-app/ios/Flutter/flutter_export_environment.sh
+nemo-app/ios/Flutter/ephemeral/
+
+# Node / web generated output
+node_modules/
+dist/
+build/

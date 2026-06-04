@@ -53,12 +53,33 @@ DEFAULT_DISALLOWED_TOOLS: tuple[str, ...] = (
     # ``Agent`` is added here at ``build_argv`` time when the flag is off.
 )
 
-#: Always-allowed tools, regardless of any ``enable_*`` flag. These are
-#: the bot's core surface — the local pyclaudir MCP server (send_message,
-#: memory, reminders, etc.) and read-only web tools.
+#: Tiny hot-path tools for normal conversation. Extra tools are selected per
+#: turn by ``pyclaudir.tool_groups`` and spliced into ``mcp_allowed_tools``.
+CORE_ALLOWED_TOOLS: tuple[str, ...] = (
+    "mcp__pyclaudir__send_message",
+    "mcp__pyclaudir__reply_to_message",
+    "mcp__pyclaudir__edit_message",
+    "mcp__pyclaudir__add_reaction",
+    "mcp__pyclaudir__now",
+)
+
+#: Back-compat/default broad tool surface. Production Nemo narrows this at
+#: startup by passing ``base_allowed_tools=CORE_ALLOWED_TOOLS``.
 BASE_ALLOWED_TOOLS: tuple[str, ...] = (
-    "mcp__pyclaudir",
-    "WebFetch",
+    *CORE_ALLOWED_TOOLS,
+    "mcp__pyclaudir__set_reminder",
+    "mcp__pyclaudir__list_reminders",
+    "mcp__pyclaudir__cancel_reminder",
+    "mcp__pyclaudir__list_memories",
+    "mcp__pyclaudir__read_memory",
+    "mcp__pyclaudir__write_memory",
+    "mcp__pyclaudir__append_memory",
+    "mcp__pyclaudir__synthesize_memory_wiki",
+    "mcp__pyclaudir__search_memories",
+    "mcp__pyclaudir__phone_action",
+    "mcp__pyclaudir__send_voice_message",
+    "mcp__pyclaudir__read_attachment",
+    "mcp__pyclaudir__fetch_url",  # SSRF-safe replacement for CC built-in WebFetch
     "WebSearch",
 )
 
@@ -118,6 +139,10 @@ class CcSpawnSpec:
     #: here, preserving today's "credentials missing → tools hidden"
     #: semantics.
     mcp_allowed_tools: tuple[str, ...] = ()
+    #: Core tool surface visible on every turn. Defaults to the historical
+    #: broad set for compatibility; Nemo passes the tiny core set and adds
+    #: intent-specific tools dynamically.
+    base_allowed_tools: tuple[str, ...] = BASE_ALLOWED_TOOLS
 
 
 def build_argv(spec: CcSpawnSpec) -> list[str]:
@@ -179,7 +204,7 @@ def build_argv(spec: CcSpawnSpec) -> list[str]:
         disallowed_extras.append("Agent")
     allowed_extras.extend(spec.mcp_allowed_tools)
 
-    allowed_tools = BASE_ALLOWED_TOOLS + tuple(allowed_extras)
+    allowed_tools = spec.base_allowed_tools + tuple(allowed_extras)
     disallowed_tools = tuple(disallowed_extras)
 
     argv: list[str] = [

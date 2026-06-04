@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from ..formatting import markdown_to_telegram_html
+from ..secrets_scrubber import scrub
+from ..security import SendRateLimiter
 from ..transcript import log_outbound
+from ..tts import speak_to_app
 from .base import BaseTool, ToolResult, record_outbound
 
 log = logging.getLogger(__name__)
+
+_send_rate_limiter = SendRateLimiter(max_messages=20, window_seconds=60.0)
 
 #: Telegram's hard limit on a single text message.
 _TELEGRAM_TEXT_LIMIT = 4096
@@ -46,10 +52,7 @@ def _chunk_text(text: str, limit: int = _TELEGRAM_TEXT_LIMIT) -> list[str]:
                 # visible to ``rfind("\n\n")`` — we split on the single
                 # ``\n`` we saw, then consume any directly-adjacent ``\n``
                 # so the next chunk doesn't lead with a separator.
-                while (
-                    next_start < len(remaining)
-                    and remaining[next_start] == "\n"
-                ):
+                while next_start < len(remaining) and remaining[next_start] == "\n":
                     next_start += 1
                 remaining = remaining[next_start:]
                 break
@@ -82,39 +85,82 @@ class SendMessageTool(BaseTool):
         if self.ctx.bot is None:
             return ToolResult(content="bot not configured", is_error=True)
 
+        scrubbed_text = scrub(args.text)
+        if scrubbed_text != args.text:
+            log.warning(
+                "outbound message contained sensitive content — redacted before send"
+            )
+
+        if not _send_rate_limiter.check_and_record(args.chat_id):
+            log.warning("outbound rate limit hit for chat=%s", args.chat_id)
+            return ToolResult(
+                content="rate limited: too many messages to this chat", is_error=True
+            )
+
         # Chunk the RAW text before markdown conversion so each chunk's HTML
         # is self-contained (no mid-tag splits across chunk boundaries).
-        raw_chunks = _chunk_text(args.text)
+        raw_chunks = _chunk_text(scrubbed_text)
         parse_mode = args.parse_mode
         if parse_mode is None:
             bodies = [markdown_to_telegram_html(c) for c in raw_chunks]
             parse_mode = "HTML"
         else:
-            # Caller owns formatting; trust them but still chunk on whitespace.
             bodies = list(raw_chunks)
 
+        # Broadcast to app clients FIRST — independent of Telegram.
+        # This ensures the app gets the reply even if Telegram send fails
+        # (e.g. user never opened the Telegram bot DM).
+        import json as _json
+        if self.ctx.app_clients:
+            payload = _json.dumps({"type": "message", "text": scrubbed_text, "chat_id": args.chat_id})
+            dead: set = set()
+            for ws in list(self.ctx.app_clients):
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    dead.add(ws)
+            self.ctx.app_clients -= dead
+            if self.ctx.on_chat_replied is not None:
+                try:
+                    self.ctx.on_chat_replied(args.chat_id)
+                except Exception:
+                    pass
+            # Generate and send TTS audio (fire-and-forget, non-blocking)
+            asyncio.create_task(
+                speak_to_app(scrubbed_text, self.ctx.app_clients),
+                name="nemo-tts",
+            )
+
+        # Send to Telegram — may fail if user hasn't opened bot DM yet.
         message_ids: list[int] = []
         for i, body in enumerate(bodies):
             reply_to = args.reply_to_message_id if i == 0 else None
-            sent = await self.ctx.bot.send_message(
-                chat_id=args.chat_id,
-                text=body,
-                reply_to_message_id=reply_to,
-                parse_mode=parse_mode,
-            )
-            message_ids.append(sent.message_id)
-            log.info(
-                "hot-path stage=delivered chat=%s msg=%s chunk=%d/%d",
-                args.chat_id, sent.message_id, i + 1, len(bodies),
-            )
+            try:
+                sent = await self.ctx.bot.send_message(
+                    chat_id=args.chat_id,
+                    text=body,
+                    reply_to_message_id=reply_to,
+                    parse_mode=parse_mode,
+                )
+                message_ids.append(sent.message_id)
+                log.info(
+                    "hot-path stage=delivered chat=%s msg=%s chunk=%d/%d",
+                    args.chat_id, sent.message_id, i + 1, len(bodies),
+                )
+                if i == 0 and self.ctx.on_chat_replied is not None:
+                    try:
+                        self.ctx.on_chat_replied(args.chat_id)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                log.warning("telegram send failed chat=%s: %s", args.chat_id, exc)
 
-            # Stop typing after the FIRST chunk lands — user has visible
-            # content. Subsequent chunks stream in without the indicator.
-            if i == 0 and self.ctx.on_chat_replied is not None:
-                try:
-                    self.ctx.on_chat_replied(args.chat_id)
-                except Exception:  # pragma: no cover
-                    pass
+        if not message_ids:
+            # App clients already got it — return success anyway
+            return ToolResult(
+                content="delivered to app (telegram unavailable)",
+                data={"chat_id": args.chat_id, "message_ids": []},
+            )
 
         first_id = message_ids[0]
         log_outbound(
@@ -122,7 +168,7 @@ class SendMessageTool(BaseTool):
             chat_titles=self.ctx.chat_titles,
             message_id=first_id,
             reply_to_id=args.reply_to_message_id,
-            text=args.text,
+            text=scrubbed_text,
         )
 
         # Persist each delivered chunk as its own row. ``record_outbound``

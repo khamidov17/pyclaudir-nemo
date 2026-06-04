@@ -126,6 +126,7 @@ class Engine:
         #: Typing-indicator state — see :class:`TypingState`.
         self._typing = TypingState()
         self._pending: list[ChatMessage] = []
+        self._pending_runtime_profiles: list[dict | None] = []
         #: Per-submit ``on_success`` hooks queued alongside ``_pending``.
         #: Transferred to ``_turn_callbacks`` when the buffer drains into
         #: a turn (``_kick`` / ``_maybe_inject``). The reminder loop hangs
@@ -145,6 +146,10 @@ class Engine:
         self._stop = asyncio.Event()
 
     # ------------------------------------------------------------------
+    @property
+    def worker(self) -> "CcWorker":
+        return self._worker
+
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -179,6 +184,7 @@ class Engine:
         msg: ChatMessage,
         *,
         on_success: Callable[[], Awaitable[None]] | None = None,
+        runtime_profile: dict | None = None,
     ) -> None:
         """Add an inbound message to the pending buffer.
 
@@ -198,6 +204,7 @@ class Engine:
         """
         async with self._lock:
             self._pending.append(msg)
+            self._pending_runtime_profiles.append(runtime_profile)
             if on_success is not None:
                 self._pending_callbacks.append(on_success)
 
@@ -222,6 +229,8 @@ class Engine:
                 return
             batch = self._pending
             self._pending = []
+            runtime_profiles = self._pending_runtime_profiles
+            self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
             self._is_processing.set()
@@ -245,6 +254,9 @@ class Engine:
             sorted(self._turn.active_chats), len(batch),
             int((now - oldest_receipt) * 1000),
         )
+        runtime_profile = self._select_runtime_profile(runtime_profiles)
+        if runtime_profile:
+            await self._worker.apply_runtime(**runtime_profile)
         await self._worker.send(xml)
 
     async def _maybe_inject(self) -> None:
@@ -263,6 +275,7 @@ class Engine:
                 return
             batch = self._pending
             self._pending = []
+            self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
         xml = await format_messages_with_context(batch, self._db)
@@ -623,7 +636,18 @@ class Engine:
         except Exception as exc:
             await self._handle_worker_failure(exc)
             return
+        # Between-turns window: apply deferred runtime changes after this
+        # turn's work completed.
+        await self._worker.flush_deferred_runtime_switch()
         await self._handle_turn_result(result)
+
+    @staticmethod
+    def _select_runtime_profile(profiles: list[dict | None]) -> dict | None:
+        selected: dict | None = None
+        for profile in profiles:
+            if profile:
+                selected = profile
+        return selected
 
     async def _handle_worker_failure(self, exc: Exception) -> None:
         """CC subprocess died mid-turn. The worker's supervisor handles

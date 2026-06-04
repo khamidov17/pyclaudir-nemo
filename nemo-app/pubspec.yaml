@@ -1,0 +1,72 @@
+name: nemo_app
+description: Nemo — your private AI assistant on Android & iOS
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # WebSocket connection to pyclaudir backend
+  web_socket_channel: ^3.0.0
+
+  # Speech-to-text — wake word + voice input, device-native, no API key
+  speech_to_text: ^7.0.0
+
+  # Text-to-speech for Nemo's replies
+  flutter_tts: ^4.2.2
+
+  # Permissions
+  permission_handler: ^11.3.1
+
+  # Persist server URL + token
+  shared_preferences: ^2.3.0
+
+  # State management
+  provider: ^6.1.2
+
+  # Camera for "camera" action command
+  camera: ^0.11.0
+
+  # OTA update download
+  http: ^1.2.0
+  open_file: ^3.3.2
+  path_provider: ^2.1.0
+
+  # Audio playback for Edge TTS voice responses
+  just_audio: ^0.9.40
+
+  # Mic recording for Gemini Live voice chat (PCM streaming)
+  record: ^7.0.0
+
+  # Background foreground service — keeps wake word alive with screen off
+  flutter_foreground_task: ^8.16.0
+
+  # Biometric auth (face → fingerprint → password cascade)
+  local_auth: ^2.3.0
+
+  # Chat interface
+  uuid: ^4.5.1
+  sqflite: ^2.3.3
+  path: ^1.9.0
+  image_picker: ^1.1.2
+  intl: ^0.19.0
+
+  # Encrypted token storage (replaces plain SharedPreferences for secrets)
+  flutter_secure_storage: ^9.2.2
+
+  # APK hash verification for OTA updates
+  crypto: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/wake_word/

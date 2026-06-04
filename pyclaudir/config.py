@@ -55,6 +55,13 @@ def _float(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number, got {raw!r}") from exc
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = _env(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Config:
     """All settings the bot uses at runtime."""
@@ -81,11 +88,22 @@ class Config:
     #: created automatically by ``ensure_dirs``.
     #: Env var: ``PYCLAUDIR_DATA_DIR`` (default ``"./data"``).
     data_dir: Path
+    #: System prompt file. Defaults to pyclaudir's framework system prompt,
+    #: but this Nemo deployment points it at ``prompts/nemo-system.md``.
+    #: Env var: ``PYCLAUDIR_SYSTEM_PROMPT_PATH``.
+    system_prompt_path: Path
+    #: Project prompt overlay file.
+    #: Env var: ``PYCLAUDIR_PROJECT_PROMPT_PATH``.
+    project_prompt_path: Path
     #: When the daily self-reflection task runs. Standard cron format,
     #: in UTC time.
     #: Env var: ``PYCLAUDIR_SELF_REFLECTION_CRON`` (default ``"0 0 * * *"``,
     #: which means midnight UTC every day).
     self_reflection_cron: str
+    #: When the daily profile synthesis (ABOUT_ME.md refresh) runs.
+    #: Default 23:59 Tashkent (UTC+5) = 18:59 UTC.
+    #: Env var: ``PYCLAUDIR_PROFILE_SYNTHESIS_CRON`` (default ``"59 18 * * *"``).
+    profile_synthesis_cron: str
     #: How long to wait (in milliseconds) after a message before sending
     #: it to Claude. If more messages come in during this wait, they are
     #: bundled together into one turn. Set to ``0`` to send each message
@@ -105,6 +123,15 @@ class Config:
     #: both use this cap. 20 MB by default.
     #: Env var: ``PYCLAUDIR_ATTACHMENT_MAX_BYTES`` (default 20_000_000).
     attachment_max_bytes: int
+    #: Cheap Nemo router in front of the main Claude Code worker.
+    #: Env var: ``PYCLAUDIR_ROUTER_ENABLED`` (default true).
+    router_enabled: bool
+    #: Claude CLI model alias used for routing. This is intentionally cheap.
+    #: Env var: ``PYCLAUDIR_ROUTER_MODEL`` (default ``"haiku"``).
+    router_model: str
+    #: Allow canned direct replies for tiny messages without touching Claude.
+    #: Env var: ``PYCLAUDIR_ROUTER_DIRECT_REPLIES`` (default true).
+    router_direct_replies: bool
 
     # ----- Settings for handling tool errors -----
     # These control what happens when Claude is still running fine, but
@@ -166,7 +193,7 @@ class Config:
     #: Env var: ``PYCLAUDIR_CRASH_WINDOW_SECONDS`` (default 600.0,
     #: which is 10 minutes).
     crash_window_seconds: float
-    
+
     # Derived paths
     db_path: Path = field(init=False)
     memories_dir: Path = field(init=False)
@@ -198,15 +225,33 @@ class Config:
             effort=_required("PYCLAUDIR_EFFORT"),
             claude_code_bin=_env("CLAUDE_CODE_BIN", "claude") or "claude",
             data_dir=Path(_env("PYCLAUDIR_DATA_DIR", "./data") or "./data").resolve(),
+            system_prompt_path=Path(
+                _env("PYCLAUDIR_SYSTEM_PROMPT_PATH", "prompts/system.md")
+                or "prompts/system.md"
+            ).resolve(),
+            project_prompt_path=Path(
+                _env("PYCLAUDIR_PROJECT_PROMPT_PATH", "prompts/project.md")
+                or "prompts/project.md"
+            ).resolve(),
             self_reflection_cron=(
                 _env("PYCLAUDIR_SELF_REFLECTION_CRON", "0 0 * * *") or "0 0 * * *"
-            ),  
+            ),
+            profile_synthesis_cron=(
+                _env("PYCLAUDIR_PROFILE_SYNTHESIS_CRON", "59 18 * * *") or "59 18 * * *"
+            ),
             debounce_ms=_int("PYCLAUDIR_DEBOUNCE_MS", 0),
             rate_limit_per_min=_int("PYCLAUDIR_RATE_LIMIT_PER_MIN", 20),
             attachment_max_bytes=_int("PYCLAUDIR_ATTACHMENT_MAX_BYTES", 20_000_000),
+            router_enabled=_bool("PYCLAUDIR_ROUTER_ENABLED", True),
+            router_model=_env("PYCLAUDIR_ROUTER_MODEL", "haiku") or "haiku",
+            router_direct_replies=_bool("PYCLAUDIR_ROUTER_DIRECT_REPLIES", True),
             tool_error_max_count=_int("PYCLAUDIR_TOOL_ERROR_MAX_COUNT", 3),
-            tool_error_window_seconds=_float("PYCLAUDIR_TOOL_ERROR_WINDOW_SECONDS", 30.0),
-            liveness_timeout_seconds=_float("PYCLAUDIR_LIVENESS_TIMEOUT_SECONDS", 300.0),
+            tool_error_window_seconds=_float(
+                "PYCLAUDIR_TOOL_ERROR_WINDOW_SECONDS", 30.0
+            ),
+            liveness_timeout_seconds=_float(
+                "PYCLAUDIR_LIVENESS_TIMEOUT_SECONDS", 300.0
+            ),
             liveness_poll_seconds=_float("PYCLAUDIR_LIVENESS_POLL_SECONDS", 30.0),
             crash_backoff_base=_float("PYCLAUDIR_CRASH_BACKOFF_BASE", 2.0),
             crash_backoff_cap=_float("PYCLAUDIR_CRASH_BACKOFF_CAP", 64.0),
@@ -224,14 +269,20 @@ class Config:
         cfg = cls(
             telegram_bot_token="test-token",
             owner_id=0,
-            model="claude-opus-4-7",
+            model="claude-haiku-4-5-20251001",
             effort="high",
             claude_code_bin="claude",
             data_dir=data_dir.resolve(),
+            system_prompt_path=Path("prompts/system.md").resolve(),
+            project_prompt_path=Path("prompts/project.md").resolve(),
             self_reflection_cron="0 0 * * *",
+            profile_synthesis_cron="59 18 * * *",
             debounce_ms=1000,
             rate_limit_per_min=20,
             attachment_max_bytes=20_000_000,
+            router_enabled=True,
+            router_model="haiku",
+            router_direct_replies=True,
             tool_error_max_count=3,
             tool_error_window_seconds=30.0,
             liveness_timeout_seconds=300.0,

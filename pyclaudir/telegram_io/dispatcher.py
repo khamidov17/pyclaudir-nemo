@@ -36,12 +36,13 @@ from ..db.messages import (
     mark_edited,
     upsert_user,
 )
-from ..db.unauthorized import chat_has_refusal, insert_unauthorized_message
 from ..input_normalizer import normalize_inbound
 from ..models import ChatMessage
+from ..nemo_router import NemoRouter
 from ..rate_limiter import RateLimitExceeded, RateLimiter
 from ..secrets_scrubber import contains_secret, scrub
-from ..transcript import log_inbound, log_inbound_edit
+from ..tool_groups import build_turn_tools
+from ..transcript import log_inbound, log_inbound_edit, log_outbound
 from .attachments import _process_attachments
 
 log = logging.getLogger("pyclaudir.telegram_io")
@@ -50,7 +51,12 @@ log = logging.getLogger("pyclaudir.telegram_io")
 class EnginePort(Protocol):
     """Minimal surface the engine must expose to the dispatcher."""
 
-    async def submit(self, msg: ChatMessage) -> None: ...
+    async def submit(
+        self,
+        msg: ChatMessage,
+        *,
+        runtime_profile: dict | None = None,
+    ) -> None: ...
 
     def prime_typing(self, chat_id: int) -> None: ...
 
@@ -122,16 +128,22 @@ class TelegramDispatcher:
         *,
         chat_titles: dict[int, str] | None = None,
         rate_limiter: RateLimiter | None = None,
+        router: NemoRouter | None = None,
+        memory_store=None,
+        external_mcp_tools: tuple[str, ...] = (),
     ) -> None:
         self.config = config
         self.db = db
         self.rate_limiter = rate_limiter
+        self.memory_store = memory_store
+        self.external_mcp_tools = external_mcp_tools
         #: May be ``None`` at construction time so callers can break the
         #: circular dep between dispatcher (owns the bot) and engine
         #: (needs the bot for the typing indicator). Must be set before
         #: :meth:`start` is called, otherwise inbound messages will crash
         #: when the handler tries to forward them.
         self.engine: EnginePort | None = engine
+        self.router = router
         #: Shared with ToolContext.chat_titles so outbound logs can render
         #: the chat's display name. We populate it from every inbound message.
         self.chat_titles: dict[int, str] = (
@@ -148,6 +160,7 @@ class TelegramDispatcher:
 
     def _wire_handlers(self) -> None:
         # Owner-only control commands first so they short-circuit the engine.
+        self.application.add_handler(CommandHandler("voice", self._cmd_voice))
         self.application.add_handler(CommandHandler("kill", self._cmd_kill))
         self.application.add_handler(CommandHandler("health", self._cmd_health))
         self.application.add_handler(CommandHandler("audit", self._cmd_audit))
@@ -160,7 +173,7 @@ class TelegramDispatcher:
         # All other text/caption messages plus photos and documents.
         self.application.add_handler(
             MessageHandler(
-                filters.TEXT | filters.CAPTION | filters.PHOTO | filters.Document.ALL,
+                filters.TEXT | filters.CAPTION | filters.PHOTO | filters.Document.ALL | filters.VOICE,
                 self._on_message,
             )
         )
@@ -181,6 +194,25 @@ class TelegramDispatcher:
             and update.effective_user.id == self.config.owner_id
         )
 
+    async def _cmd_voice(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+        """Open Nemo Voice as a Telegram Mini App."""
+        if not self._is_owner(update):
+            return
+        import os
+        server_ip = os.environ.get("NEMO_SERVER_IP", "165.140.240.169")
+        voice_url = f"http://{server_ip}:3001"
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "🎙 Open Nemo Voice",
+                web_app=WebAppInfo(url=voice_url),
+            )
+        ]])
+        await update.effective_message.reply_text(
+            "Tap to start voice conversation with Nemo:",
+            reply_markup=keyboard,
+        )
+
     async def _cmd_kill(self, update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_owner(update):
             return
@@ -189,6 +221,9 @@ class TelegramDispatcher:
             await update.effective_message.reply_text("Shutting down…")
         except Exception:
             pass
+        from ..security import write_kill_marker
+        write_kill_marker(self.config.data_dir)
+        log.warning("kill marker written to %s", self.config.data_dir / "kill_marker")
         os.kill(os.getpid(), signal.SIGTERM)
 
     async def _cmd_health(
@@ -399,17 +434,76 @@ class TelegramDispatcher:
         self._remember_chat_title(update)
         chat_type = update.effective_chat.type if update.effective_chat else None
         if not self._check_access(cm, chat_type):
-            await self._handle_unauthorized(cm, chat_type)
             return
         if not await self._check_rate_limit(cm, chat_type):
             return
 
+        # Auto-transcribe Telegram voice notes via Groq Whisper STT
+        msg = update.effective_message
+        if msg is not None and msg.voice is not None and not cm.text:
+            transcript = await self._transcribe_voice(msg)
+            if transcript:
+                cm = cm.model_copy(update={"text": f"[Voice note]: {transcript}"})
+                log.info("STT transcribed voice note chat=%s: %r", cm.chat_id, transcript[:60])
+            else:
+                cm = cm.model_copy(update={"text": "[Voice note — transcription unavailable. Please type your message.]"})
+
         await self._attach_attachment_markers(update, cm)
         await self._persist_inbound(cm)
+
+        runtime_profile: dict | None = None
+        if self.router is not None:
+            override: str | None = None
+            decision = await self.router.route(cm.text)
+            log.info(
+                "router decision intent=%s direct=%s reason=%s chat=%s msg=%s",
+                decision.intent,
+                bool(decision.direct_reply),
+                decision.reason,
+                cm.chat_id,
+                cm.message_id,
+            )
+            if decision.direct_reply:
+                await self._send_router_reply(cm, decision.direct_reply)
+                return
+            if decision.intent == "CODEX":
+                cm.text = (
+                    '<router intent="CODEX">Use the Codex MCP as the primary '
+                    "coding agent for this request.</router>\n" + cm.text
+                )
+            if cm.user_id == self.config.owner_id:
+                override = self.router.model_for_turn(cm.text)
+                if override is not None:
+                    # Strip the directive phrase, keep any actual request.
+                    cleaned = self.router.strip_model_directive(cm.text)
+                    if cleaned:
+                        cm = cm.model_copy(update={"text": cleaned})
+                    else:
+                        if self.engine is not None:
+                            self.engine.worker.defer_runtime_switch(model=override)
+                        await self._send_router_reply(
+                            cm, f"Switching to {override} on next turn."
+                        )
+                        return
+            runtime_profile = {
+                "model": override if cm.user_id == self.config.owner_id else None,
+                "mcp_allowed_tools": build_turn_tools(
+                    cm.text,
+                    intent=decision.intent,
+                    external_tools=self.external_mcp_tools,
+                ),
+            }
 
         if self.engine is None:
             log.error("dispatcher received message before engine was attached")
             return
+
+        # Inject relevant memory snippets as context before the turn reaches CC.
+        if self.memory_store is not None and cm.text:
+            from ..memory_context import build_memory_context
+            ctx = build_memory_context(cm.text, self.memory_store)
+            if ctx:
+                cm = cm.model_copy(update={"memory_context": ctx})
 
         # Fire typing indicator NOW — before debounce + XML format + worker.send.
         # Without this, the user waits silently for the whole hot path before
@@ -421,7 +515,72 @@ class TelegramDispatcher:
             cm.message_id,
             int((time.monotonic() - received_at) * 1000),
         )
-        await self.engine.submit(cm)
+        await self.engine.submit(cm, runtime_profile=runtime_profile)
+
+    async def _transcribe_voice(self, msg: object) -> str | None:
+        """Download a Telegram voice note and transcribe via STT."""
+        try:
+            from ..stt import transcribe as stt_transcribe
+            import tempfile
+            import os
+            voice = msg.voice  # type: ignore[attr-defined]
+            tg_file = await self.bot.get_file(voice.file_id)
+            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+                tmp_path = tmp.name
+            await tg_file.download_to_drive(tmp_path)
+            from pathlib import Path
+            result = await stt_transcribe(Path(tmp_path))
+            os.unlink(tmp_path)
+            return result
+        except Exception as exc:
+            log.warning("voice transcription failed: %s", exc)
+            return None
+
+    async def _send_router_reply(self, cm: ChatMessage, text: str) -> None:
+        text = scrub(text)
+        sent = await self.bot.send_message(chat_id=cm.chat_id, text=text)
+        await self._persist_router_outbound(
+            chat_id=cm.chat_id,
+            message_id=sent.message_id,
+            text=text,
+        )
+        log_outbound(
+            chat_id=cm.chat_id,
+            chat_titles=self.chat_titles,
+            message_id=sent.message_id,
+            reply_to_id=None,
+            text=text,
+        )
+
+    async def _persist_router_outbound(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+    ) -> None:
+        try:
+            me = await self.bot.get_me()
+            user_id = me.id
+            username = me.username
+            first_name = me.first_name
+        except Exception:
+            user_id = 0
+            username = None
+            first_name = "Nemo"
+        await insert_message(
+            self.db,
+            ChatMessage(
+                chat_id=chat_id,
+                message_id=message_id,
+                user_id=user_id,
+                username=username,
+                first_name=first_name,
+                direction="out",
+                timestamp=datetime.now(timezone.utc),
+                text=text,
+            ),
+        )
 
     async def _attach_attachment_markers(
         self,
@@ -489,35 +648,6 @@ class TelegramDispatcher:
             allowed=allowed,
         )
         return allowed
-
-    async def _handle_unauthorized(
-        self, cm: ChatMessage, chat_type: str | None
-    ) -> None:
-        """Log a denied message to ``unauthorized_messages`` and, in DMs
-        only, send the one-time refusal reply. Groups stay silent. The
-        row is written first so a failed send still records the attempt
-        and won't trigger a retry on the next message."""
-        should_reply = chat_type == "private" and not await chat_has_refusal(
-            self.db, cm.chat_id
-        )
-        await insert_unauthorized_message(
-            self.db,
-            cm=cm,
-            chat_type=chat_type,
-            refusal_sent=should_reply,
-        )
-        if not should_reply:
-            return
-        try:
-            await self.bot.send_message(
-                chat_id=cm.chat_id,
-                text=(
-                    "This is a private assistant. "
-                    "Please contact the owner if you want an access."
-                ),
-            )
-        except Exception:
-            log.warning("unauthorized refusal send failed for chat %s", cm.chat_id)
 
     async def _check_rate_limit(
         self,
@@ -630,6 +760,7 @@ class TelegramDispatcher:
 
     async def _register_owner_commands(self) -> None:
         commands = [
+            BotCommand("voice", "open Nemo Voice (Gemini Live)"),
             BotCommand("health", "quick health readout"),
             BotCommand("audit", "recent failures, backups, memory footprint"),
             BotCommand("access", "show access policy"),
