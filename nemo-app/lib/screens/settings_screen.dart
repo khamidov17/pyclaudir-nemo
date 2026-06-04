@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 import '../services/nemo_service.dart';
+import '../services/update_service.dart';
 import '../services/wake_word_service.dart';
 
 const _storage = FlutterSecureStorage(
@@ -43,6 +44,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await wake.start();
     } else {
       await wake.stop();
+    }
+  }
+
+  Future<void> _checkUpdate() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final updater = context.read<UpdateService>();
+    void snack(String m) =>
+        messenger.showSnackBar(SnackBar(content: Text(m)));
+    final url = (await _storage.read(key: 'server_url') ?? '').trim();
+    if (url.isEmpty) {
+      snack('Add your server URL and token first.');
+      return;
+    }
+    snack('Checking for updates…');
+    await updater.checkForUpdate(url);
+    if (!mounted) return;
+    if (updater.updateAvailable) {
+      snack('Nemo v${updater.serverVersion} found — downloading…');
+      await updater.downloadAndInstall(url); // verifies hash, opens installer
+    } else {
+      snack("You're on the latest version.");
     }
   }
 
@@ -114,7 +136,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 12),
+          Consumer<UpdateService>(
+            builder: (_, updater, __) {
+              if (updater.isDownloading) {
+                return OutlinedButton.icon(
+                  onPressed: null,
+                  icon: const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  label: Text(
+                    'Downloading ${(updater.downloadProgress * 100).toStringAsFixed(0)}%…',
+                  ),
+                );
+              }
+              return OutlinedButton.icon(
+                onPressed: _checkUpdate,
+                icon: const Icon(Icons.system_update),
+                label: const Text('Check for updates'),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
           FilledButton(
             onPressed: _save,
             child: const Text('Save & Reconnect'),
