@@ -35,8 +35,9 @@ Future<void> main() async {
   final phoneActions = PhoneActionService(nemo);
   phoneActions.start();
 
-  // Start background foreground service so wake word works with screen off
-  if (isPaired) {
+  // Start background foreground service so wake word works with screen off.
+  // Off by default — only when the user has opted in via Settings.
+  if (isPaired && await WakeWordService.isEnabled()) {
     await BackgroundWakeWordService.start();
   }
 

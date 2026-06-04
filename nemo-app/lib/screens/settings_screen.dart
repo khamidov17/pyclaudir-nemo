@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 import '../services/nemo_service.dart';
+import '../services/wake_word_service.dart';
 
 const _storage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -17,6 +18,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _urlController = TextEditingController();
   final _tokenController = TextEditingController();
+  bool _wakeEnabled = false;
 
   @override
   void initState() {
@@ -28,7 +30,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     // Read from encrypted storage — same as pairing screen writes
     _urlController.text = await _storage.read(key: 'server_url') ?? '';
     _tokenController.text = await _storage.read(key: 'app_token') ?? '';
+    _wakeEnabled = await WakeWordService.isEnabled();
     setState(() {});
+  }
+
+  Future<void> _toggleWake(bool on) async {
+    setState(() => _wakeEnabled = on);
+    await WakeWordService.setEnabled(on);
+    if (!mounted) return;
+    final wake = context.read<WakeWordService>();
+    if (on) {
+      await wake.start();
+    } else {
+      await wake.stop();
+    }
   }
 
   Future<void> _save() async {
@@ -79,17 +94,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
               color: const Color(0xFF1E1E2E),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: const Column(
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('🎤 Wake word',
-                    style: TextStyle(
-                        color: Colors.white70, fontWeight: FontWeight.bold)),
-                SizedBox(height: 6),
-                Text(
-                  'Say "nemo", "hey nemo" or "ok nemo" to activate Gemini voice.\n'
-                  'Fully on-device — no API key needed.',
-                  style: TextStyle(color: Colors.white38, fontSize: 13),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _wakeEnabled,
+                  onChanged: _toggleWake,
+                  title: const Text('🎤 Wake word',
+                      style: TextStyle(
+                          color: Colors.white70, fontWeight: FontWeight.bold)),
+                  subtitle: const Text(
+                    'Say "nemo" / "hey nemo" to open Gemini voice. On-device, no '
+                    'API key. Off by default — when on, the phone keeps the mic '
+                    'open and may chime as it re-listens.',
+                    style: TextStyle(color: Colors.white38, fontSize: 13),
+                  ),
                 ),
               ],
             ),

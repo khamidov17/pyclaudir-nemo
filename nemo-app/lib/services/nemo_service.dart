@@ -49,7 +49,9 @@ class NemoService extends ChangeNotifier {
       final uri = Uri.parse('$_serverUrl/ws?device_id=$_deviceId');
       _channel = WebSocketChannel.connect(uri);
       await _channel!.ready;
-      _setState(NemoState.connected);
+      // Stay "connecting" until the server's auth-gated "connected" frame
+      // arrives. Showing connected here (before token validation) made a
+      // bad token look like "connected but silent".
 
       // Send auth as first message (not in URL)
       _channel!.sink.add(jsonEncode({

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
 /// On-device wake word detection — no API key, fully offline.
@@ -16,6 +17,18 @@ class WakeWordService extends ChangeNotifier {
 
   static const _triggers = ['nemo', 'hey nemo', 'ok nemo', 'yo nemo'];
 
+  static const _store = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
+  /// Wake word is OFF by default — the looped STT windows fire Android's
+  /// recognizer chime every few seconds. Opt in via Settings.
+  static Future<bool> isEnabled() async =>
+      (await _store.read(key: 'wake_word_enabled')) == 'true';
+
+  static Future<void> setEnabled(bool on) async =>
+      _store.write(key: 'wake_word_enabled', value: on ? 'true' : 'false');
+
   Future<void> init() async {
     _ready = await _stt.initialize(
       onError: (e) => debugPrint('wake STT error: ${e.errorMsg}'),
@@ -26,6 +39,10 @@ class WakeWordService extends ChangeNotifier {
 
   Future<void> start() async {
     if (!_ready || _running) return;
+    if (!await isEnabled()) {
+      debugPrint('WakeWordService: disabled (opt in via Settings)');
+      return;
+    }
     _running = true;
     notifyListeners();
     debugPrint('WakeWordService: started');
