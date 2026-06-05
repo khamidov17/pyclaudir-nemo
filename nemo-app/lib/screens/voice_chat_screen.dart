@@ -40,10 +40,9 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   @override
   void initState() {
     super.initState();
-    // Auto-start if triggered by wake word — no tap needed
-    if (widget.autoStart) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _toggleVoice());
-    }
+    // Always auto-start — opening the voice screen means "start talking".
+    // No tap required (wake word or the voice button both land here).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _toggleVoice());
     _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 800))
       ..repeat(reverse: true);
     _pulseAnim = Tween<double>(begin: 1.0, end: 1.3).animate(
@@ -146,7 +145,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    _voice.isActive ? 'Listening…' : 'Tap to start',
+                    _voice.isActive ? 'Listening…' : 'Connecting… (tap to retry)',
                     style: const TextStyle(color: Colors.white38, fontSize: 14),
                   ),
                   const SizedBox(height: 20),
