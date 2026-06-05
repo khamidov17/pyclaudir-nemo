@@ -871,6 +871,12 @@ class CcWorker:
             return
         if self._current_turn is None:
             self._current_turn = TurnResult()
+        if etype == "system" and event.get("subtype") == "compact_boundary":
+            # CC auto-compacted its own context. Flag the turn so the engine
+            # re-seeds the next one with recent history (bounded session).
+            self._current_turn.compacted = True
+            log.info("cc context compacted — will restore recent history next turn")
+            return
         if etype == "assistant":
             self._on_assistant_event(event)
         elif etype == "user":

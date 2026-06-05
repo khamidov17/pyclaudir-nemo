@@ -29,6 +29,11 @@ class TurnResult:
     #: ``"tool-error-limit"``). Engine branches on this before treating
     #: the result as a normal turn completion.
     aborted_reason: str | None = None
+    #: True iff CC auto-compacted its context during this turn (it emitted a
+    #: ``system/compact_boundary`` event). The engine re-seeds the next turn
+    #: with the last ``compaction_restore_limit`` messages from the DB so the
+    #: resumed session stays bounded instead of growing without limit.
+    compacted: bool = False
 
 
 class CrashLoop(RuntimeError):

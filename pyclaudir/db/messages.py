@@ -184,6 +184,39 @@ async def fetch_reply_chain(
     return chain
 
 
+async def fetch_recent_messages(
+    db: Database, chat_id: int, limit: int
+) -> list[dict]:
+    """Return the last ``limit`` messages for ``chat_id``, oldest-first.
+
+    Used to re-seed the next turn after Claude Code auto-compacts its
+    context, so the resumed session keeps a bounded recent window instead
+    of losing the conversation tail. Each entry has ``direction``,
+    ``first_name``, ``timestamp``, and ``text``.
+    """
+    if limit <= 0:
+        return []
+    rows = await db.fetch_all(
+        """
+        SELECT direction, first_name, timestamp, text
+        FROM messages
+        WHERE chat_id = ?
+        ORDER BY rowid DESC
+        LIMIT ?
+        """,
+        (chat_id, limit),
+    )
+    return [
+        {
+            "direction": r["direction"],
+            "first_name": r["first_name"],
+            "timestamp": r["timestamp"],
+            "text": r["text"],
+        }
+        for r in reversed(rows)
+    ]
+
+
 async def _load_reactions(
     db: Database, chat_id: int, message_id: int
 ) -> dict[str, list[int]]:

@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..cc_failure_classifier import CcFailureClassification, classify_cc_failure
 from ..config import Config
+from ..db.messages import fetch_recent_messages
 from ..models import ChatMessage
 from .format import format_messages_with_context
 
@@ -119,6 +121,12 @@ class Engine:
         # Cache hot-path knobs so the control loop and dropped-text
         # handler don't dereference Config on every event.
         self._tool_error_max_count: int = config.tool_error_max_count
+        #: After CC auto-compacts, re-seed the next turn with this many recent
+        #: messages so the resumed session stays bounded.
+        self._compaction_restore_limit: int = config.compaction_restore_limit
+        #: Restoration text staged after a compacted turn; prepended to the
+        #: next turn's prompt in :meth:`_kick`, then cleared.
+        self._pending_restoration: str | None = None
         #: Optional callback that shows the "typing..." indicator in a
         #: Telegram chat. Wired by ``__main__.py`` to ``bot.send_chat_action``.
         self._typing_action = typing_action
@@ -242,33 +250,50 @@ class Engine:
         # the turn-start typing indicator should be silent for
         # reminder-only turns.
         self._turn.active_chats = {m.chat_id for m in batch if m.message_id > 0}
-        # Mark which chats' replies should NOT be echoed to Telegram because
-        # the turn came from the mobile app. Overwritten every turn, so a
-        # following Telegram turn clears it.
-        if self._ctx is not None:
-            self._ctx.app_origin_chats = {
-                m.chat_id for m in batch if getattr(m, "source", "telegram") == "app"
-            }
+        self._mark_app_origin(batch)
         self._turn.dropped_text_retries = 0
-        xml = await format_messages_with_context(batch, self._db)
+        xml = await self._build_turn_prompt(batch)
         log.info("starting turn with %d msgs", len(batch))
-        # Show "typing..." in every chat involved in this batch.
-        await self._start_typing(set(self._turn.active_chats))
-        import time as _t
-        now = _t.monotonic()
-        oldest_receipt = min(
-            (m.received_at_monotonic for m in batch if m.received_at_monotonic is not None),
-            default=now,
-        )
-        log.info(
-            "hot-path stage=worker-send chats=%s msgs=%d t_ms=%d",
-            sorted(self._turn.active_chats), len(batch),
-            int((now - oldest_receipt) * 1000),
-        )
+        await self._announce_turn_start(batch)
         runtime_profile = self._select_runtime_profile(runtime_profiles)
         if runtime_profile:
             await self._worker.apply_runtime(**runtime_profile)
         await self._worker.send(xml)
+
+    async def _announce_turn_start(self, batch: list[ChatMessage]) -> None:
+        """Start the typing indicator and log hot-path send latency."""
+        await self._start_typing(set(self._turn.active_chats))
+        now = time.monotonic()
+        oldest = min(
+            (
+                m.received_at_monotonic
+                for m in batch
+                if m.received_at_monotonic is not None
+            ),
+            default=now,
+        )
+        log.info(
+            "hot-path stage=worker-send chats=%s msgs=%d t_ms=%d",
+            sorted(self._turn.active_chats),
+            len(batch),
+            int((now - oldest) * 1000),
+        )
+
+    def _mark_app_origin(self, batch: list[ChatMessage]) -> None:
+        """Flag chats whose turn came from the mobile app so ``send_message``
+        won't echo the reply into Telegram. Overwritten every turn."""
+        if self._ctx is not None:
+            self._ctx.app_origin_chats = {
+                m.chat_id for m in batch if getattr(m, "source", "telegram") == "app"
+            }
+
+    async def _build_turn_prompt(self, batch: list[ChatMessage]) -> str:
+        """Render the turn XML, prepending any compaction-restore block."""
+        xml = await format_messages_with_context(batch, self._db)
+        if self._pending_restoration:
+            xml = self._pending_restoration + "\n" + xml
+            self._pending_restoration = None
+        return xml
 
     async def _maybe_inject(self) -> None:
         """Write pending messages to CC's stdin mid-turn.
@@ -293,14 +318,20 @@ class Engine:
         await self._worker.inject(xml)
 
         import time as _t
+
         now = _t.monotonic()
         oldest_receipt = min(
-            (m.received_at_monotonic for m in batch if m.received_at_monotonic is not None),
+            (
+                m.received_at_monotonic
+                for m in batch
+                if m.received_at_monotonic is not None
+            ),
             default=now,
         )
         log.info(
             "hot-path stage=inject chats=%s msgs=%d t_ms=%d",
-            sorted({m.chat_id for m in batch}), len(batch),
+            sorted({m.chat_id for m in batch}),
+            len(batch),
             int((now - oldest_receipt) * 1000),
         )
 
@@ -381,9 +412,9 @@ class Engine:
             "start_typing called: chats=%s action_set=%s task_state=%s",
             chat_ids,
             self._typing_action is not None,
-            "None" if self._typing.task is None else (
-                "done" if self._typing.task.done() else "running"
-            ),
+            "None"
+            if self._typing.task is None
+            else ("done" if self._typing.task.done() else "running"),
         )
         if self._typing_action is None or not chat_ids:
             return
@@ -465,7 +496,10 @@ class Engine:
         self._typing.wake.set()
         # Cancel any pending deferred discard so it doesn't fire after we
         # already stopped.
-        if self._typing.deferred_stop is not None and not self._typing.deferred_stop.done():
+        if (
+            self._typing.deferred_stop is not None
+            and not self._typing.deferred_stop.done()
+        ):
             self._typing.deferred_stop.cancel()
             try:
                 await self._typing.deferred_stop
@@ -574,7 +608,8 @@ class Engine:
         user_msg = self._build_dropped_text_user_message(result)
         log.warning(
             "dropped_text retry limit hit (%d/%d); surfacing to user",
-            self._turn.dropped_text_retries, max_retries,
+            self._turn.dropped_text_retries,
+            max_retries,
         )
         await self._notify_error_to_chats(user_msg)
         self._turn.active_chats.clear()
@@ -684,6 +719,33 @@ class Engine:
         )
         self._turn.active_chats.clear()
 
+    async def _stage_compaction_restore(self, chats: set[int]) -> None:
+        """Build the recent-history block to prepend to the next turn after
+        CC auto-compacted. Targets the chat whose turn just ran."""
+        if self._db is None or not chats:
+            return
+        chat_id = next(iter(chats))
+        recent = await fetch_recent_messages(
+            self._db, chat_id, self._compaction_restore_limit
+        )
+        if not recent:
+            return
+        lines = []
+        for m in recent:
+            who = m["first_name"] or ("Nemo" if m["direction"] == "out" else "User")
+            lines.append(f"[{who}] {m['text']}")
+        self._pending_restoration = (
+            "<system_note>Your context was just compacted. For continuity, the "
+            f"last {len(recent)} messages in this chat were:\n"
+            + "\n".join(lines)
+            + "\n</system_note>"
+        )
+        log.info(
+            "staged compaction restore: %d recent msgs for chat=%s",
+            len(recent),
+            chat_id,
+        )
+
     async def _fire_turn_callbacks(self) -> None:
         """Run every ``on_success`` hook queued for the just-ended turn.
 
@@ -726,7 +788,9 @@ class Engine:
         action = result.control.action if result.control else None
         log.info(
             "turn done (action=%s, dropped_text=%s, text_blocks=%d)",
-            action, result.dropped_text, len(result.text_blocks),
+            action,
+            result.dropped_text,
+            len(result.text_blocks),
         )
 
         # Best-effort classification: if stderr tells us the failure mode
@@ -735,9 +799,7 @@ class Engine:
         # rate-limited AND dropped_text, but we only notify once per turn.
         stderr_classification = classify_cc_failure(result.stderr_tail)
         if stderr_classification is not None:
-            await self._notify_error_to_chats(
-                stderr_classification.user_message
-            )
+            await self._notify_error_to_chats(stderr_classification.user_message)
 
         if result.dropped_text:
             await self._handle_dropped_text(result)
@@ -745,8 +807,14 @@ class Engine:
 
         # Successful turn — reset the dropped-text retry counter.
         self._turn.dropped_text_retries = 0
+        restore_chats = set(self._turn.active_chats)
         self._turn.active_chats.clear()
         await self._fire_turn_callbacks()
+
+        # If CC auto-compacted this turn, stage the recent history so the
+        # next turn re-seeds it — keeps the resumed session bounded.
+        if result.compacted:
+            await self._stage_compaction_restore(restore_chats)
 
         if action == "sleep" and result.control and result.control.sleep_ms:
             await asyncio.sleep(result.control.sleep_ms / 1000)

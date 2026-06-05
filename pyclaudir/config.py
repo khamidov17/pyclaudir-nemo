@@ -132,6 +132,10 @@ class Config:
     #: Allow canned direct replies for tiny messages without touching Claude.
     #: Env var: ``PYCLAUDIR_ROUTER_DIRECT_REPLIES`` (default true).
     router_direct_replies: bool
+    #: After Claude Code auto-compacts its context, re-seed the next turn
+    #: with this many recent messages from the DB so the resumed session
+    #: stays bounded. Env var: ``PYCLAUDIR_COMPACTION_RESTORE_LIMIT`` (20).
+    compaction_restore_limit: int
 
     # ----- Settings for handling tool errors -----
     # These control what happens when Claude is still running fine, but
@@ -245,6 +249,7 @@ class Config:
             router_enabled=_bool("PYCLAUDIR_ROUTER_ENABLED", True),
             router_model=_env("PYCLAUDIR_ROUTER_MODEL", "haiku") or "haiku",
             router_direct_replies=_bool("PYCLAUDIR_ROUTER_DIRECT_REPLIES", True),
+            compaction_restore_limit=_int("PYCLAUDIR_COMPACTION_RESTORE_LIMIT", 20),
             tool_error_max_count=_int("PYCLAUDIR_TOOL_ERROR_MAX_COUNT", 3),
             tool_error_window_seconds=_float(
                 "PYCLAUDIR_TOOL_ERROR_WINDOW_SECONDS", 30.0
@@ -283,6 +288,7 @@ class Config:
             router_enabled=True,
             router_model="haiku",
             router_direct_replies=True,
+            compaction_restore_limit=20,
             tool_error_max_count=3,
             tool_error_window_seconds=30.0,
             liveness_timeout_seconds=300.0,
