@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:record/record.dart';
@@ -51,6 +52,28 @@ class VoiceChatService extends ChangeNotifier {
 
   Future<bool> start(String serverHost) async {
     if (_active) return true;
+
+    // One persistent voice-communication session for the whole chat. Shared
+    // by the recorder and just_audio so playback doesn't re-grab audio focus
+    // each turn (the "ding") and the mic + speaker coexist with hardware AEC.
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
+        avAudioSessionCategoryOptions:
+            AVAudioSessionCategoryOptions.defaultToSpeaker,
+        avAudioSessionMode: AVAudioSessionMode.voiceChat,
+        androidAudioAttributes: AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.speech,
+          usage: AndroidAudioUsage.voiceCommunication,
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidWillPauseWhenDucked: false,
+      ));
+      await session.setActive(true);
+    } catch (e) {
+      debugPrint('audio session configure failed: $e');
+    }
 
     final uri = _voiceUri(serverHost);
     try {
@@ -110,6 +133,7 @@ class VoiceChatService extends ChangeNotifier {
         // clear media speaker. Echo is handled by half-duplex muting instead.
         androidConfig: AndroidRecordConfig(
           audioSource: AndroidAudioSource.voiceCommunication,
+          speakerphone: true, // route Nemo's reply to the loud speaker
         ),
       ));
     } catch (e) {
@@ -183,6 +207,10 @@ class VoiceChatService extends ChangeNotifier {
     _wsSub?.cancel();
     _ws?.sink.close(ws_status.goingAway);
     _ws = null;
+    _muted = false;
+    try {
+      await (await AudioSession.instance).setActive(false);
+    } catch (_) {}
     notifyListeners();
     debugPrint('VoiceChatService: stopped');
   }

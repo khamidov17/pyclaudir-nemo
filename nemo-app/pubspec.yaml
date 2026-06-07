@@ -1,7 +1,7 @@
 name: nemo_app
 description: Nemo — your private AI assistant on Android & iOS
 publish_to: none
-version: 1.0.24+24
+version: 1.0.25+25
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -39,6 +39,11 @@ dependencies:
 
   # Audio playback for Edge TTS voice responses
   just_audio: ^0.9.40
+
+  # One persistent voice-communication audio session shared by record +
+  # just_audio, so playback doesn't grab audio focus every turn (the "ding")
+  # and the mic + speaker coexist with hardware echo cancellation.
+  audio_session: ^0.1.25
 
   # Mic recording for Gemini Live voice chat (PCM streaming)
   record: ^7.0.0

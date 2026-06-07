@@ -86,6 +86,9 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     final combined = Uint8List.fromList(_audioBuffer.expand((c) => c).toList());
     _audioBuffer.clear();
     final seq = ++_playSeq;
+    // 24kHz mono 16-bit → bytes / (24000*2) seconds. Used to deterministically
+    // resume the mic so it can never get stuck muted if play() never completes.
+    final ms = (combined.length / (24000 * 2) * 1000).round() + 250;
     try {
       final dir = await getTemporaryDirectory();
       // Unique filename per turn so just_audio doesn't cache a stale clip.
@@ -95,12 +98,14 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
       // Half-duplex: stop streaming mic while Nemo speaks so the speaker
       // output isn't captured as the user, then resume to hear the reply.
       _voice.setMuted(true);
-      await _player.play(); // completes when the clip finishes
+      _player.play();
     } catch (e) {
       debugPrint('audio play error: $e');
-    } finally {
-      _voice.setMuted(false);
     }
+    // Resume listening once the clip has played (latest turn wins).
+    Future.delayed(Duration(milliseconds: ms), () {
+      if (mounted && _playSeq == seq) _voice.setMuted(false);
+    });
   }
 
   Future<void> _toggleVoice() async {
