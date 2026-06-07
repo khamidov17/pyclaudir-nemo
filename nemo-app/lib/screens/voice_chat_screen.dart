@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import '../services/voice_chat_service.dart';
 
-/// Full-screen Gemini Live voice chat — tap to talk, Nemo talks back.
+/// Full-screen Nemo Voice chat — tap to talk, Nemo talks back.
 class VoiceChatScreen extends StatefulWidget {
   final String serverHost;
   final bool autoStart;
@@ -31,11 +31,14 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   final List<String> _log = [];
   StreamSubscription? _transcriptSub;
   StreamSubscription? _audioSub;
+  StreamSubscription? _controlSub;
   StreamSubscription? _errorSub;
 
-  // Buffer for incoming PCM audio chunks (24kHz)
+  // Accumulate the agent's 24kHz PCM for the whole turn, then play it as one
+  // clip on 'turn_complete'. just_audio can't stream raw PCM chunk-by-chunk —
+  // replacing the source every 200ms produced no audible output.
   final List<Uint8List> _audioBuffer = [];
-  Timer? _playTimer;
+  int _playSeq = 0;
 
   @override
   void initState() {
@@ -52,7 +55,16 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     _transcriptSub = _voice.transcripts.listen((t) {
       setState(() => _log.add(t));
     });
-    _audioSub = _voice.audioOut.listen(_bufferAudio);
+    _audioSub = _voice.audioOut.listen((chunk) => _audioBuffer.add(chunk));
+    _controlSub = _voice.controls.listen((signal) {
+      if (signal == 'turn_complete') {
+        _playBufferedTurn();
+      } else if (signal == 'interrupted') {
+        // Barge-in: drop the agent's queued audio and stop playback.
+        _audioBuffer.clear();
+        _player.stop();
+      }
+    });
     _errorSub = _voice.errors.listen((message) {
       if (!mounted) return;
       setState(() => _log.add(message));
@@ -62,25 +74,17 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     });
   }
 
-  void _bufferAudio(Uint8List chunk) {
-    _audioBuffer.add(chunk);
-    _playTimer?.cancel();
-    // Batch chunks for 200ms then play
-    _playTimer = Timer(const Duration(milliseconds: 200), _flushAudio);
-  }
-
-  Future<void> _flushAudio() async {
+  Future<void> _playBufferedTurn() async {
     if (_audioBuffer.isEmpty) return;
     final combined = Uint8List.fromList(_audioBuffer.expand((c) => c).toList());
     _audioBuffer.clear();
+    final seq = ++_playSeq;
     try {
       final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/nemo_voice_chunk.pcm');
+      // Unique filename per turn so just_audio doesn't cache a stale clip.
+      final file = File('${dir.path}/nemo_voice_$seq.pcm');
       await file.writeAsBytes(combined);
-      // Play raw PCM 24kHz mono 16-bit
-      await _player.setAudioSource(
-        _PCMSource(file.path, sampleRate: 24000),
-      );
+      await _player.setAudioSource(_PCMSource(file.path, sampleRate: 24000));
       await _player.play();
     } catch (e) {
       debugPrint('audio play error: $e');
@@ -194,10 +198,10 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     _voice.dispose();
     _transcriptSub?.cancel();
     _audioSub?.cancel();
+    _controlSub?.cancel();
     _errorSub?.cancel();
     _player.dispose();
     _pulse.dispose();
-    _playTimer?.cancel();
     super.dispose();
   }
 }

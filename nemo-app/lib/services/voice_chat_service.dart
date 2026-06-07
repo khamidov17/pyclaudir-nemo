@@ -10,7 +10,7 @@ const _storage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
 );
 
-/// Real-time voice chat via nemo-voice (Gemini Live API).
+/// Real-time voice chat via nemo-voice (Deepgram Voice Agent).
 ///
 /// Streams 16kHz PCM mic audio to ws://SERVER:3002,
 /// receives 24kHz PCM audio back and plays it.
@@ -34,6 +34,11 @@ class VoiceChatService extends ChangeNotifier {
 
   final StreamController<Uint8List> _audioOut = StreamController.broadcast();
   Stream<Uint8List> get audioOut => _audioOut.stream;
+
+  // Control signals from the agent: 'turn_complete' (play buffered audio),
+  // 'interrupted' (barge-in — drop buffered audio), 'ready'.
+  final StreamController<String> _controls = StreamController.broadcast();
+  Stream<String> get controls => _controls.stream;
 
   final StreamController<String> _errors = StreamController.broadcast();
   Stream<String> get errors => _errors.stream;
@@ -122,6 +127,14 @@ class VoiceChatService extends ChangeNotifier {
         case 'user_transcript':
           final text = data['data'] as String? ?? '';
           if (text.isNotEmpty) _transcripts.add('You: $text');
+        case 'turn_complete':
+          _controls.add('turn_complete');
+        case 'interrupted':
+          _controls.add('interrupted');
+        case 'ready':
+          _controls.add('ready');
+        case 'error':
+          _errors.add(data['message'] as String? ?? 'Voice error');
       }
     } catch (e) {
       debugPrint('VoiceChatService parse error: $e');
@@ -159,6 +172,7 @@ class VoiceChatService extends ChangeNotifier {
     stop();
     _transcripts.close();
     _audioOut.close();
+    _controls.close();
     _errors.close();
     super.dispose();
   }
