@@ -91,6 +91,17 @@ class VoiceChatService extends ChangeNotifier {
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
+        // Hands-free echo cancellation: without this the mic hears Nemo's
+        // own voice from the speaker and Deepgram treats it as the user
+        // talking (barge-in), cutting Nemo off — the "interruptive" feel.
+        echoCancel: true,
+        noiseSuppress: true,
+        autoGain: true,
+        androidConfig: AndroidRecordConfig(
+          audioSource: AndroidAudioSource.voiceCommunication,
+          audioManagerMode: AudioManagerMode.modeInCommunication,
+          speakerphone: true,
+        ),
       ));
     } catch (e) {
       _errors.add('Could not start microphone stream.');

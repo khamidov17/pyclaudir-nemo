@@ -179,9 +179,9 @@ async def _recv_client(client_ws, deepgram_ws):
             audio = base64.b64decode(data.get("data", ""))
             if audio:
                 total_audio += len(audio)
-                # Log cumulative mic audio every ~32KB (~1s @16kHz) so we can
+                # Log cumulative mic audio every ~8KB (~0.25s @16kHz) so we can
                 # confirm the app is actually streaming the microphone.
-                if total_audio - last_log >= 32000:
+                if total_audio - last_log >= 8000:
                     last_log = total_audio
                     LOG.info("mic audio from APK: %d bytes total", total_audio)
                 await deepgram_ws.send(audio)

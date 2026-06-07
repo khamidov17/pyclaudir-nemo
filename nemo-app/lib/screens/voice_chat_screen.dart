@@ -5,8 +5,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
 import 'dart:io';
 import '../services/voice_chat_service.dart';
+import '../services/wake_word_service.dart';
 
 /// Full-screen Nemo Voice chat — tap to talk, Nemo talks back.
 class VoiceChatScreen extends StatefulWidget {
@@ -25,6 +27,7 @@ class VoiceChatScreen extends StatefulWidget {
 class _VoiceChatScreenState extends State<VoiceChatScreen>
     with SingleTickerProviderStateMixin {
   late VoiceChatService _voice;
+  WakeWordService? _wake;
   late AnimationController _pulse;
   late Animation<double> _pulseAnim;
   final AudioPlayer _player = AudioPlayer();
@@ -43,6 +46,10 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   @override
   void initState() {
     super.initState();
+    // Wake word and voice chat both need the microphone, and Android only
+    // grants it to one consumer. Release the wake-word recognizer for the
+    // whole lifetime of this screen so the voice recorder can capture audio.
+    _wake = context.read<WakeWordService>();
     // Always auto-start — opening the voice screen means "start talking".
     // No tap required (wake word or the voice button both land here).
     WidgetsBinding.instance.addPostFrameCallback((_) => _toggleVoice());
@@ -95,6 +102,10 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     if (_voice.isActive) {
       await _voice.stop();
     } else {
+      // Free the mic from the wake-word recognizer before recording. Give
+      // Android a moment to fully release the audio input.
+      await _wake?.stop();
+      await Future.delayed(const Duration(milliseconds: 300));
       final started = await _voice.start(widget.serverHost);
       if (!mounted) return;
       if (started) {
@@ -196,6 +207,8 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   void dispose() {
     _voice.stop();
     _voice.dispose();
+    // Resume wake word (no-op if the user disabled it in Settings).
+    _wake?.start();
     _transcriptSub?.cancel();
     _audioSub?.cancel();
     _controlSub?.cancel();
