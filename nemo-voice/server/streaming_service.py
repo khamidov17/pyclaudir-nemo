@@ -50,7 +50,7 @@ def _redacted_hash(value: str) -> str:
 
 
 def _deepgram_settings() -> dict:
-    return {
+    settings = {
         "type": "Settings",
         "tags": ["nemo", "android"],
         "mip_opt_out": True,
@@ -91,12 +91,15 @@ def _deepgram_settings() -> dict:
                     "model": os.environ.get("DEEPGRAM_SPEAK_MODEL", "aura-2-thalia-en"),
                 },
             },
-            "greeting": os.environ.get(
-                "DEEPGRAM_GREETING",
-                "Hey, I'm Nemo. I'm listening.",
-            ),
         },
     }
+    # Greeting is OFF by default: a spoken "...Nemo..." greeting is picked up
+    # by the on-device wake word and re-triggers the voice session. Set
+    # DEEPGRAM_GREETING to a non-empty string to re-enable.
+    greeting = os.environ.get("DEEPGRAM_GREETING", "").strip()
+    if greeting:
+        settings["agent"]["greeting"] = greeting
+    return settings
 
 
 async def _recv_deepgram(deepgram_ws, client_ws):
