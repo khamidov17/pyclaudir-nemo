@@ -28,6 +28,12 @@ class VoiceChatService extends ChangeNotifier {
   bool _active = false;
   bool get isActive => _active;
 
+  // Half-duplex: while Nemo is speaking we stop forwarding mic audio so the
+  // speaker output isn't captured as the user talking (echo) and so the next
+  // user turn starts clean. Set by the screen around playback.
+  bool _muted = false;
+  void setMuted(bool m) => _muted = m;
+
   // Callbacks for UI
   final StreamController<String> _transcripts = StreamController.broadcast();
   Stream<String> get transcripts => _transcripts.stream;
@@ -97,10 +103,13 @@ class VoiceChatService extends ChangeNotifier {
         echoCancel: true,
         noiseSuppress: true,
         autoGain: true,
+        // voiceCommunication source gives a clean mic + hardware AEC. We do
+        // NOT force modeInCommunication/speakerphone — that routed Nemo's
+        // playback through the low-quality call path (muffled/fast-sounding).
+        // Leaving the global mode normal lets just_audio play through the
+        // clear media speaker. Echo is handled by half-duplex muting instead.
         androidConfig: AndroidRecordConfig(
           audioSource: AndroidAudioSource.voiceCommunication,
-          audioManagerMode: AudioManagerMode.modeInCommunication,
-          speakerphone: true,
         ),
       ));
     } catch (e) {
@@ -113,7 +122,7 @@ class VoiceChatService extends ChangeNotifier {
     notifyListeners();
 
     _recorderSub = stream.listen((chunk) {
-      if (_ws != null && chunk.isNotEmpty) {
+      if (_ws != null && chunk.isNotEmpty && !_muted) {
         final b64 = base64Encode(chunk);
         _ws!.sink.add(jsonEncode({'type': 'audio', 'data': b64}));
       }

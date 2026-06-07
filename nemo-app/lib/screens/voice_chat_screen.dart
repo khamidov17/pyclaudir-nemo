@@ -92,9 +92,14 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
       final file = File('${dir.path}/nemo_voice_$seq.pcm');
       await file.writeAsBytes(combined);
       await _player.setAudioSource(_PCMSource(file.path, sampleRate: 24000));
-      await _player.play();
+      // Half-duplex: stop streaming mic while Nemo speaks so the speaker
+      // output isn't captured as the user, then resume to hear the reply.
+      _voice.setMuted(true);
+      await _player.play(); // completes when the clip finishes
     } catch (e) {
       debugPrint('audio play error: $e');
+    } finally {
+      _voice.setMuted(false);
     }
   }
 
