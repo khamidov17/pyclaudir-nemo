@@ -29,22 +29,35 @@ class VoiceChatService extends ChangeNotifier {
   bool _active = false;
   bool get isActive => _active;
 
-  // Half-duplex: while Nemo is speaking we stop forwarding mic audio so the
-  // speaker output isn't captured as the user talking (echo) and so the next
-  // user turn starts clean. Set by the screen around playback.
+  // Soft half-duplex: while Nemo is speaking we stop forwarding mic audio to
+  // Deepgram so his own voice (echoing from the speaker on the clear media
+  // playback path, which has no hardware AEC reference) can't be heard as the
+  // user "barging in" and cut his sentence off. The screen toggles this around
+  // playback, keyed to when his audio actually finishes. A watchdog guarantees
+  // the mic can never stay muted if a resume signal is ever lost.
   bool _muted = false;
-  void setMuted(bool m) => _muted = m;
+  Timer? _muteWatchdog;
+  void setMuted(bool m) {
+    _muted = m;
+    _muteWatchdog?.cancel();
+    if (m) {
+      _muteWatchdog = Timer(const Duration(seconds: 15), () => _muted = false);
+    }
+  }
 
   // Callbacks for UI
   final StreamController<String> _transcripts = StreamController.broadcast();
   Stream<String> get transcripts => _transcripts.stream;
 
-  final StreamController<Uint8List> _audioOut = StreamController.broadcast();
+  final StreamController<Uint8List> _audioOut =
+      StreamController.broadcast(sync: true);
   Stream<Uint8List> get audioOut => _audioOut.stream;
 
-  // Control signals from the agent: 'turn_complete' (play buffered audio),
-  // 'interrupted' (barge-in — drop buffered audio), 'ready'.
-  final StreamController<String> _controls = StreamController.broadcast();
+  // Control signals from the agent: 'agent_audio_start' (mute mic),
+  // 'turn_complete' (Nemo finished — resume mic), 'interrupted' (barge-in),
+  // 'ready'. The screen acts on these to drive half-duplex + playback.
+  final StreamController<String> _controls =
+      StreamController.broadcast(sync: true);
   Stream<String> get controls => _controls.stream;
 
   final StreamController<String> _errors = StreamController.broadcast();
@@ -53,9 +66,9 @@ class VoiceChatService extends ChangeNotifier {
   Future<bool> start(String serverHost) async {
     if (_active) return true;
 
-    // One persistent voice-communication session for the whole chat. Shared
-    // by the recorder and just_audio so playback doesn't re-grab audio focus
-    // each turn (the "ding") and the mic + speaker coexist with hardware AEC.
+    // One audio session for the whole chat: record captures the mic while the
+    // native player (VoicePlayer.kt) plays Nemo's reply on the clear media
+    // path. Grab audio focus so other apps pause for the duration of the call.
     try {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration(
@@ -65,7 +78,7 @@ class VoiceChatService extends ChangeNotifier {
         avAudioSessionMode: AVAudioSessionMode.voiceChat,
         androidAudioAttributes: AndroidAudioAttributes(
           contentType: AndroidAudioContentType.speech,
-          usage: AndroidAudioUsage.voiceCommunication,
+          usage: AndroidAudioUsage.media,
         ),
         androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
         androidWillPauseWhenDucked: false,
@@ -120,20 +133,19 @@ class VoiceChatService extends ChangeNotifier {
         encoder: AudioEncoder.pcm16bits,
         sampleRate: 16000,
         numChannels: 1,
-        // Hands-free echo cancellation: without this the mic hears Nemo's
-        // own voice from the speaker and Deepgram treats it as the user
-        // talking (barge-in), cutting Nemo off — the "interruptive" feel.
+        // Clean mic capture: software echo/noise/gain processing. Nemo's own
+        // voice is kept out of Deepgram by half-duplex muting (the screen
+        // stops forwarding mic audio while he speaks), not hardware AEC.
         echoCancel: true,
         noiseSuppress: true,
         autoGain: true,
-        // voiceCommunication source gives a clean mic + hardware AEC. We do
-        // NOT force modeInCommunication/speakerphone — that routed Nemo's
-        // playback through the low-quality call path (muffled/fast-sounding).
-        // Leaving the global mode normal lets just_audio play through the
-        // clear media speaker. Echo is handled by half-duplex muting instead.
+        // Do NOT force speakerphone: that puts the system in communication
+        // mode and routes Nemo's reply through the muffled call path. We play
+        // on the clear media path (VoicePlayer USAGE_MEDIA), which already
+        // goes to the loudspeaker; leaving the mode normal keeps it crisp.
         androidConfig: AndroidRecordConfig(
           audioSource: AndroidAudioSource.voiceCommunication,
-          speakerphone: true, // route Nemo's reply to the loud speaker
+          speakerphone: false,
         ),
       ));
     } catch (e) {
@@ -173,6 +185,8 @@ class VoiceChatService extends ChangeNotifier {
           if (text.isNotEmpty) _transcripts.add('You: $text');
         case 'turn_complete':
           _controls.add('turn_complete');
+        case 'agent_audio_start':
+          _controls.add('agent_audio_start');
         case 'interrupted':
           _controls.add('interrupted');
         case 'ready':
@@ -208,6 +222,7 @@ class VoiceChatService extends ChangeNotifier {
     _ws?.sink.close(ws_status.goingAway);
     _ws = null;
     _muted = false;
+    _muteWatchdog?.cancel();
     try {
       await (await AudioSession.instance).setActive(false);
     } catch (_) {}

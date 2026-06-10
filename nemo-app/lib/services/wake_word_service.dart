@@ -20,12 +20,12 @@ class WakeWordService extends ChangeNotifier {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
-  /// Wake word is ON by default so "nemo" works even with the app closed
-  /// (the background foreground-service keeps the mic alive). Long listening
-  /// windows keep Android's recognizer chime infrequent. Toggle off in
-  /// Settings if the periodic chime bothers you.
+  /// Wake word is OFF by default. Android's SpeechRecognizer plays a system
+  /// "ding" and grabs audio focus every time it (re)starts listening, which
+  /// pauses/ducks other apps (music, Instagram reels) even when you're not in
+  /// a voice chat. Opt in from Settings if you want hands-free "nemo".
   static Future<bool> isEnabled() async =>
-      (await _store.read(key: 'wake_word_enabled')) != 'false';
+      (await _store.read(key: 'wake_word_enabled')) == 'true';
 
   static Future<void> setEnabled(bool on) async =>
       _store.write(key: 'wake_word_enabled', value: on ? 'true' : 'false');

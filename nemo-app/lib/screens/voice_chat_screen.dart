@@ -1,13 +1,10 @@
 // ignore_for_file: experimental_member_use
 
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
-import 'dart:io';
 import '../services/voice_chat_service.dart';
+import '../services/native_voice_player.dart';
 import '../services/wake_word_service.dart';
 
 /// Full-screen Nemo Voice chat — tap to talk, Nemo talks back.
@@ -30,18 +27,20 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   WakeWordService? _wake;
   late AnimationController _pulse;
   late Animation<double> _pulseAnim;
-  final AudioPlayer _player = AudioPlayer();
+  // Native AudioTrack streaming player on the voice-comms path — plays Nemo's
+  // 24kHz PCM chunk-by-chunk as it arrives (full-duplex, barge-in capable).
+  final NativeVoicePlayer _player = NativeVoicePlayer();
   final List<String> _log = [];
   StreamSubscription? _transcriptSub;
   StreamSubscription? _audioSub;
   StreamSubscription? _controlSub;
   StreamSubscription? _errorSub;
-
-  // Accumulate the agent's 24kHz PCM for the whole turn, then play it as one
-  // clip on 'turn_complete'. just_audio can't stream raw PCM chunk-by-chunk —
-  // replacing the source every 200ms produced no audible output.
-  final List<Uint8List> _audioBuffer = [];
-  int _playSeq = 0;
+  // Estimated wall-clock time (ms since epoch) at which all audio handed to
+  // the player so far will have finished playing. Used to resume the mic the
+  // instant Nemo actually stops speaking — not before (echo) or much after.
+  int _estPlaybackEndMs = 0;
+  Timer? _unmuteTimer;
+  bool _nemoSpeaking = false;
 
   @override
   void initState() {
@@ -62,14 +61,42 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     _transcriptSub = _voice.transcripts.listen((t) {
       setState(() => _log.add(t));
     });
-    _audioSub = _voice.audioOut.listen((chunk) => _audioBuffer.add(chunk));
+    // Stream each agent PCM chunk straight to the native player — no per-turn
+    // buffering — and advance the estimated playback-end clock (24kHz·16-bit
+    // mono = 48000 bytes/sec) so we know when Nemo will actually stop talking.
+    _audioSub = _voice.audioOut.listen((chunk) {
+      _player.write(chunk);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (_estPlaybackEndMs < now) _estPlaybackEndMs = now;
+      _estPlaybackEndMs += (chunk.length / 48000 * 1000).round();
+    });
     _controlSub = _voice.controls.listen((signal) {
-      if (signal == 'turn_complete') {
-        _playBufferedTurn();
+      if (signal == 'agent_audio_start') {
+        // Nemo started talking → close the mic so his voice can't echo back
+        // into Deepgram and cut him off.
+        _unmuteTimer?.cancel();
+        _voice.setMuted(true);
+        if (mounted) setState(() => _nemoSpeaking = true);
+      } else if (signal == 'turn_complete') {
+        // Resume the mic only once the buffered audio has finished playing
+        // (plus a small tail for the speaker to settle), so the very end of
+        // his sentence doesn't leak back as a phantom user turn.
+        final remaining =
+            _estPlaybackEndMs - DateTime.now().millisecondsSinceEpoch + 350;
+        _unmuteTimer?.cancel();
+        _unmuteTimer = Timer(
+          Duration(milliseconds: remaining.clamp(0, 6000)),
+          () {
+            _voice.setMuted(false);
+            if (mounted) setState(() => _nemoSpeaking = false);
+          },
+        );
       } else if (signal == 'interrupted') {
-        // Barge-in: drop the agent's queued audio and stop playback.
-        _audioBuffer.clear();
-        _player.stop();
+        _player.flush();
+        _estPlaybackEndMs = 0;
+        _unmuteTimer?.cancel();
+        _voice.setMuted(false);
+        if (mounted) setState(() => _nemoSpeaking = false);
       }
     });
     _errorSub = _voice.errors.listen((message) {
@@ -81,45 +108,24 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
     });
   }
 
-  Future<void> _playBufferedTurn() async {
-    if (_audioBuffer.isEmpty) return;
-    final combined = Uint8List.fromList(_audioBuffer.expand((c) => c).toList());
-    _audioBuffer.clear();
-    final seq = ++_playSeq;
-    // 24kHz mono 16-bit → bytes / (24000*2) seconds. Used to deterministically
-    // resume the mic so it can never get stuck muted if play() never completes.
-    final ms = (combined.length / (24000 * 2) * 1000).round() + 250;
-    try {
-      final dir = await getTemporaryDirectory();
-      // Unique filename per turn so just_audio doesn't cache a stale clip.
-      final file = File('${dir.path}/nemo_voice_$seq.pcm');
-      await file.writeAsBytes(combined);
-      await _player.setAudioSource(_PCMSource(file.path, sampleRate: 24000));
-      // Half-duplex: stop streaming mic while Nemo speaks so the speaker
-      // output isn't captured as the user, then resume to hear the reply.
-      _voice.setMuted(true);
-      _player.play();
-    } catch (e) {
-      debugPrint('audio play error: $e');
-    }
-    // Resume listening once the clip has played (latest turn wins).
-    Future.delayed(Duration(milliseconds: ms), () {
-      if (mounted && _playSeq == seq) _voice.setMuted(false);
-    });
-  }
-
   Future<void> _toggleVoice() async {
     if (_voice.isActive) {
       await _voice.stop();
+      await _player.stop();
     } else {
       // Free the mic from the wake-word recognizer before recording. Give
       // Android a moment to fully release the audio input.
       await _wake?.stop();
       await Future.delayed(const Duration(milliseconds: 300));
+      // Open the native playback path before the mic so MODE_IN_COMMUNICATION
+      // + hardware AEC are active when the first agent audio arrives.
+      await _player.start(sampleRate: 24000);
       final started = await _voice.start(widget.serverHost);
       if (!mounted) return;
       if (started) {
         setState(() => _log.add('Voice chat started - speak now'));
+      } else {
+        await _player.stop();
       }
     }
   }
@@ -135,6 +141,7 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
           icon: const Icon(Icons.arrow_back),
           onPressed: () async {
             await _voice.stop();
+            await _player.stop();
             if (mounted) Navigator.pop(context);
           },
         ),
@@ -170,7 +177,11 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    _voice.isActive ? 'Listening…' : 'Connecting… (tap to retry)',
+                    !_voice.isActive
+                        ? 'Connecting… (tap to retry)'
+                        : _nemoSpeaking
+                            ? 'Nemo is speaking…'
+                            : 'Listening…',
                     style: const TextStyle(color: Colors.white38, fontSize: 14),
                   ),
                   const SizedBox(height: 20),
@@ -186,18 +197,27 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
                         width: 90, height: 90,
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
-                          color: _voice.isActive
-                              ? const Color(0xFF7C3AED)
-                              : const Color(0xFF1E1E2E),
+                          color: !_voice.isActive
+                              ? const Color(0xFF1E1E2E)
+                              : _nemoSpeaking
+                                  ? const Color(0xFF22C55E)
+                                  : const Color(0xFF7C3AED),
                           boxShadow: _voice.isActive
-                              ? [const BoxShadow(
-                                  color: Color(0x667C3AED),
-                                  blurRadius: 20, spreadRadius: 4,
+                              ? [BoxShadow(
+                                  color: (_nemoSpeaking
+                                          ? const Color(0xFF22C55E)
+                                          : const Color(0xFF7C3AED))
+                                      .withValues(alpha: 0.4),
+                                  blurRadius: 24, spreadRadius: 4,
                                 )]
                               : [],
                         ),
                         child: Icon(
-                          _voice.isActive ? Icons.stop : Icons.mic,
+                          !_voice.isActive
+                              ? Icons.mic
+                              : _nemoSpeaking
+                                  ? Icons.graphic_eq
+                                  : Icons.mic,
                           color: Colors.white,
                           size: 40,
                         ),
@@ -217,65 +237,15 @@ class _VoiceChatScreenState extends State<VoiceChatScreen>
   void dispose() {
     _voice.stop();
     _voice.dispose();
+    _player.stop();
     // Resume wake word (no-op if the user disabled it in Settings).
     _wake?.start();
     _transcriptSub?.cancel();
     _audioSub?.cancel();
     _controlSub?.cancel();
     _errorSub?.cancel();
-    _player.dispose();
+    _unmuteTimer?.cancel();
     _pulse.dispose();
     super.dispose();
   }
-}
-
-// Minimal AudioSource wrapper for raw PCM — just_audio can't play raw PCM
-// directly, so we convert to WAV header + data
-class _PCMSource extends StreamAudioSource {
-  final String path;
-  final int sampleRate;
-  _PCMSource(this.path, {this.sampleRate = 24000}) : super(tag: 'pcm');
-
-  @override
-  Future<StreamAudioResponse> request([int? start, int? end]) async {
-    final pcm = await File(path).readAsBytes();
-    final wav = _wrapWav(pcm, sampleRate);
-    final slice = wav.sublist(start ?? 0, end ?? wav.length);
-    return StreamAudioResponse(
-      sourceLength: wav.length,
-      contentLength: slice.length,
-      offset: start ?? 0,
-      stream: Stream.value(slice),
-      contentType: 'audio/wav',
-    );
-  }
-
-  Uint8List _wrapWav(Uint8List pcm, int rate) {
-    final dataLen = pcm.length;
-    final totalLen = dataLen + 36;
-    final buf = ByteData(44 + dataLen);
-    // RIFF header
-    final riff = ascii('RIFF');
-    for (var i = 0; i < 4; i++) buf.setUint8(i, riff[i]);
-    buf.setUint32(4, totalLen, Endian.little);
-    final wave = ascii('WAVE');
-    for (var i = 0; i < 4; i++) buf.setUint8(8 + i, wave[i]);
-    final fmt = ascii('fmt ');
-    for (var i = 0; i < 4; i++) buf.setUint8(12 + i, fmt[i]);
-    buf.setUint32(16, 16, Endian.little); // chunk size
-    buf.setUint16(20, 1, Endian.little);  // PCM
-    buf.setUint16(22, 1, Endian.little);  // mono
-    buf.setUint32(24, rate, Endian.little);
-    buf.setUint32(28, rate * 2, Endian.little); // byte rate
-    buf.setUint16(32, 2, Endian.little);  // block align
-    buf.setUint16(34, 16, Endian.little); // bits per sample
-    final data = ascii('data');
-    for (var i = 0; i < 4; i++) buf.setUint8(36 + i, data[i]);
-    buf.setUint32(40, dataLen, Endian.little);
-    final result = buf.buffer.asUint8List();
-    result.setRange(44, 44 + dataLen, pcm);
-    return result;
-  }
-
-  List<int> ascii(String s) => s.codeUnits;
 }

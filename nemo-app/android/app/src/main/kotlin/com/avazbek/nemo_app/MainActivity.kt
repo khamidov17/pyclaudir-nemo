@@ -28,6 +28,7 @@ class MainActivity : FlutterActivity() {
         const val CH_INTENTS = "com.avazbek.nemo_app/intents"
         const val CH_SCREENSHOT = "com.avazbek.nemo_app/screenshot"
         const val CH_NOTIFICATION = "com.avazbek.nemo_app/notification"
+        const val CH_VOICE = "com.avazbek.nemo_app/voice_player"
         const val SCREENSHOT_REQUEST = 1001
     }
 
@@ -35,6 +36,9 @@ class MainActivity : FlutterActivity() {
     private var mediaProjection: MediaProjection? = null
     private var pendingScreenshotResult: MethodChannel.Result? = null
     private var screenshotChannel: MethodChannel? = null
+
+    // Continuous voice playback (native AudioTrack on the voice-comms path)
+    private val voicePlayer by lazy { VoicePlayer(applicationContext) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -130,6 +134,25 @@ class MainActivity : FlutterActivity() {
                         hideRemoteControlNotification()
                         result.success(true)
                     }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ── Voice player channel (continuous PCM16 playback) ───────────
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_VOICE)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "start" -> {
+                        voicePlayer.start(call.argument<Int>("sampleRate") ?: 24000)
+                        result.success(true)
+                    }
+                    "write" -> {
+                        val data = call.argument<ByteArray>("data")
+                        if (data != null) voicePlayer.write(data)
+                        result.success(true)
+                    }
+                    "flush" -> { voicePlayer.flush(); result.success(true) }
+                    "stop" -> { voicePlayer.stop(); result.success(true) }
                     else -> result.notImplemented()
                 }
             }

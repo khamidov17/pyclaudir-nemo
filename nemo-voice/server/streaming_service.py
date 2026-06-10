@@ -13,6 +13,8 @@ from aiohttp import web
 from dotenv import load_dotenv
 import websockets
 
+import voice_brain
+
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(ROOT_ENV, override=False)
@@ -22,20 +24,15 @@ HOST = os.environ.get("VOICE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("VOICE_PORT", "3002"))
 HTTP_PORT = int(os.environ.get("VOICE_HTTP_PORT", "3001"))
 DEEPGRAM_URL = "wss://agent.deepgram.com/v1/agent/converse"
+DEEPGRAM_AUDIO_DONE_FALLBACK_SEC = float(
+    os.environ.get("DEEPGRAM_AUDIO_DONE_FALLBACK_SEC", "1.5")
+)
 
 LOG = logging.getLogger("nemo.deepgram_voice")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
-
-
-SYSTEM_PROMPT = """You are Nemo, Avazbek's private voice assistant.
-
-Speak naturally, warmly, and briefly. Keep replies useful in a live phone
-conversation. If the user asks you to operate private tools that are not
-available in this voice session, say you can help through Nemo text chat.
-"""
 
 
 def _required_env(name: str) -> str:
@@ -71,7 +68,7 @@ def _deepgram_settings() -> dict:
                     "type": "deepgram",
                     "model": os.environ.get("DEEPGRAM_LISTEN_MODEL", "flux-general-en"),
                     "version": os.environ.get("DEEPGRAM_LISTEN_VERSION", "v2"),
-                    "eot_threshold": float(os.environ.get("DEEPGRAM_EOT_THRESHOLD", "0.75")),
+                    "eot_threshold": float(os.environ.get("DEEPGRAM_EOT_THRESHOLD", "0.85")),
                     "eager_eot_threshold": float(
                         os.environ.get("DEEPGRAM_EAGER_EOT_THRESHOLD", "0.45")
                     ),
@@ -83,7 +80,10 @@ def _deepgram_settings() -> dict:
                     "model": os.environ.get("DEEPGRAM_THINK_MODEL", "gpt-4o-mini"),
                     "temperature": float(os.environ.get("DEEPGRAM_TEMPERATURE", "0.7")),
                 },
-                "prompt": os.environ.get("DEEPGRAM_VOICE_PROMPT", SYSTEM_PROMPT),
+                # Nemo identity + the shared memory store, rebuilt each session.
+                "prompt": os.environ.get("DEEPGRAM_VOICE_PROMPT") or voice_brain.build_prompt(),
+                # Client-side tools: read/write shared memory, reach Avazbek, time.
+                "functions": voice_brain.FUNCTIONS,
             },
             "speak": {
                 "provider": {
@@ -102,13 +102,68 @@ def _deepgram_settings() -> dict:
     return settings
 
 
+async def _handle_function_calls(event, deepgram_ws):
+    """Run client-side tool calls Deepgram requested and return the results.
+
+    Deepgram sends {"type":"FunctionCallRequest","functions":[{id,name,
+    arguments(json-string),client_side}]}; we reply one FunctionCallResponse
+    per call. Server-side (endpoint) functions are skipped — we declare none.
+    """
+    for fn in event.get("functions", []):
+        if not fn.get("client_side", True):
+            continue
+        name = fn.get("name", "")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        LOG.info("voice function call: %s %s", name, args)
+        content = await voice_brain.dispatch(name, args)
+        response = {
+            "type": "FunctionCallResponse",
+            "id": fn.get("id"),
+            "name": name,
+            "content": content,
+        }
+        if "thought_signature" in fn:
+            response["thought_signature"] = fn["thought_signature"]
+        await deepgram_ws.send(json.dumps(response))
+
+
 async def _recv_deepgram(deepgram_ws, client_ws):
+    audio_done_timer = None
+    agent_audio_started = False
+    audio_bytes = 0
+
+    async def complete_audio_turn(delay=0.0):
+        nonlocal agent_audio_started, audio_bytes
+        if delay:
+            await asyncio.sleep(delay)
+        if agent_audio_started:
+            LOG.info("agent audio turn complete: %d bytes", audio_bytes)
+            await client_ws.send(json.dumps({"type": "turn_complete"}))
+            agent_audio_started = False
+            audio_bytes = 0
+
+    def schedule_audio_done():
+        nonlocal audio_done_timer
+        if audio_done_timer:
+            audio_done_timer.cancel()
+        audio_done_timer = asyncio.create_task(
+            complete_audio_turn(DEEPGRAM_AUDIO_DONE_FALLBACK_SEC)
+        )
+
     async for message in deepgram_ws:
         if isinstance(message, bytes):
+            if not agent_audio_started:
+                agent_audio_started = True
+                await client_ws.send(json.dumps({"type": "agent_audio_start"}))
+            audio_bytes += len(message)
             await client_ws.send(json.dumps({
                 "type": "audio",
                 "data": base64.b64encode(message).decode("ascii"),
             }))
+            schedule_audio_done()
             continue
 
         try:
@@ -130,9 +185,19 @@ async def _recv_deepgram(deepgram_ws, client_ws):
                     "data": text,
                 }))
         elif event_type == "AgentAudioDone":
-            await client_ws.send(json.dumps({"type": "turn_complete"}))
+            if audio_done_timer:
+                audio_done_timer.cancel()
+                audio_done_timer = None
+            await complete_audio_turn()
         elif event_type == "UserStartedSpeaking":
+            if audio_done_timer:
+                audio_done_timer.cancel()
+                audio_done_timer = None
+            agent_audio_started = False
+            audio_bytes = 0
             await client_ws.send(json.dumps({"type": "interrupted", "data": "barge_in"}))
+        elif event_type == "FunctionCallRequest":
+            await _handle_function_calls(event, deepgram_ws)
         elif event_type == "Error":
             LOG.error("Deepgram error: %s", event)
             await client_ws.send(json.dumps({
@@ -250,6 +315,15 @@ async def _handle_client(client_ws):
             {to_deepgram, to_client, keepalive},
             return_when=asyncio.FIRST_COMPLETED,
         )
+        # If the Deepgram side ended first the client is still up — tell it why
+        # instead of letting the app see only a silent socket close.
+        if to_client in done and to_deepgram not in done:
+            try:
+                await client_ws.send(json.dumps(
+                    {"type": "error", "message": "voice session ended (Deepgram closed)"}
+                ))
+            except Exception:
+                pass
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
@@ -299,7 +373,23 @@ async def _serve_client_http():
     LOG.info("Voice client HTTP server on port %d", HTTP_PORT)
 
 
+def _check_required_env() -> None:
+    """Fail loudly at boot if the keys every session needs are missing.
+
+    Without these, _handle_client raises per-connection and the app only sees
+    a bare disconnect — the actual cause ("DEEPGRAM_API_KEY is not configured")
+    never reaches the user. Surface it once, clearly, at startup.
+    """
+    missing = [n for n in ("NEMO_APP_TOKEN", "DEEPGRAM_API_KEY") if not os.environ.get(n, "").strip()]
+    if missing:
+        raise SystemExit(
+            f"FATAL: missing required env: {', '.join(missing)}. "
+            f"Set them in the .env next to this service before starting."
+        )
+
+
 async def main():
+    _check_required_env()
     LOG.info("Starting Deepgram voice bridge on %s:%d", HOST, PORT)
     async with websockets.serve(_ws_handler, HOST, PORT):
         await asyncio.gather(_serve_client_http(), asyncio.Future())

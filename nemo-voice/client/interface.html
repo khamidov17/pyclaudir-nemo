@@ -2,464 +2,263 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
-  <title>Nemo Voice</title>
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nemo Voice — test client</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #131318;
-      color: #fff;
-      height: 100vh;
-      height: 100dvh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      overflow: hidden;
-      user-select: none;
-      -webkit-user-select: none;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #0F0F1A; color: #fff; min-height: 100dvh;
+      display: flex; flex-direction: column; align-items: center; padding: 24px;
     }
-
-    .orb-container {
-      position: relative;
-      width: 220px;
-      height: 220px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      cursor: pointer;
+    h1 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 12px; margin-bottom: 20px; }
+    .row { display: flex; gap: 8px; width: 100%; max-width: 520px; margin-bottom: 10px; }
+    input {
+      flex: 1; background: #1A1A28; border: 1px solid #2A2A3A; color: #fff;
+      border-radius: 8px; padding: 10px 12px; font-size: 14px;
     }
-
-    .ring {
-      position: absolute;
-      border-radius: 50%;
-      border: 2px solid transparent;
-      opacity: 0;
-      transition: opacity 0.6s, transform 0.4s, border-color 0.6s;
+    button {
+      background: #7C3AED; color: #fff; border: 0; border-radius: 8px;
+      padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
     }
-    .ring-1 { width: 220px; height: 220px; }
-    .ring-2 { width: 260px; height: 260px; }
-    .ring-3 { width: 300px; height: 300px; }
-
-    .orb-core {
-      width: 140px;
-      height: 140px;
-      border-radius: 50%;
-      position: relative;
-      z-index: 2;
-      transition: transform 0.3s ease, box-shadow 0.4s ease;
+    button:disabled { opacity: 0.4; cursor: default; }
+    button.stop { background: #d23b54; }
+    .orb {
+      width: 120px; height: 120px; border-radius: 50%; margin: 24px 0;
+      background: #1E1E2E; transition: all .25s; box-shadow: 0 0 0 rgba(124,58,237,0);
     }
-
-    .orb-glow {
-      position: absolute;
-      width: 200px;
-      height: 200px;
-      border-radius: 50%;
-      filter: blur(40px);
-      opacity: 0;
-      z-index: 1;
-      transition: opacity 0.5s;
+    .orb.listening { background: #7C3AED; box-shadow: 0 0 40px 6px rgba(124,58,237,.4); }
+    .orb.speaking  { background: #34a853; box-shadow: 0 0 50px 10px rgba(52,168,83,.5); transform: scale(1.08); }
+    .orb.error     { background: #d23b54; }
+    #state { font-size: 13px; color: #aaa; min-height: 18px; margin-bottom: 12px; }
+    #log {
+      width: 100%; max-width: 520px; flex: 1; overflow-y: auto;
+      background: #14141F; border: 1px solid #222; border-radius: 10px;
+      padding: 12px; font-size: 13px; line-height: 1.5;
     }
-
-    /* ── Idle ── */
-    [data-state="idle"] .orb-core {
-      background: conic-gradient(from 0deg, #555, #333, #555);
-      box-shadow: 0 0 30px rgba(66,133,244,0.15);
-      animation: gentle-rotate 8s linear infinite;
-    }
-    [data-state="idle"] .orb-glow { opacity: 0.15; background: #4285f4; }
-
-    /* ── Connecting ── */
-    [data-state="connecting"] .orb-core {
-      background: conic-gradient(from 0deg, #4285f4, #9b72cb, #d96570, #d96570, #9b72cb, #4285f4);
-      animation: spin 3s linear infinite;
-      box-shadow: 0 0 40px rgba(66,133,244,0.3);
-    }
-    [data-state="connecting"] .orb-glow { opacity: 0.3; background: #4285f4; }
-
-    /* ── Listening ── */
-    [data-state="listening"] .orb-core {
-      background: conic-gradient(from 0deg, #4285f4, #9b72cb, #d96570, #fbbc04, #34a853, #4285f4);
-      box-shadow: 0 0 50px rgba(66,133,244,0.25), 0 0 100px rgba(155,114,203,0.1);
-      animation: gentle-rotate 8s linear infinite;
-    }
-    [data-state="listening"] .orb-glow {
-      opacity: 0.25;
-      background: radial-gradient(circle, #4285f4, #9b72cb);
-      animation: glow-breathe 4s ease-in-out infinite;
-    }
-    [data-state="listening"] .ring { border-color: rgba(66,133,244,0.08); opacity: 0.4; }
-
-    /* ── User speaking ── */
-    [data-state="user-speaking"] .orb-core {
-      background: conic-gradient(from 0deg, #34a853, #4285f4, #9b72cb, #34a853);
-      box-shadow: 0 0 60px rgba(52,168,83,0.3), 0 0 120px rgba(66,133,244,0.15);
-      transform: scale(1.08);
-      animation: gentle-rotate 4s linear infinite;
-    }
-    [data-state="user-speaking"] .orb-glow {
-      opacity: 0.5;
-      background: radial-gradient(circle, #34a853, #4285f4);
-      animation: glow-breathe 1.5s ease-in-out infinite;
-    }
-    [data-state="user-speaking"] .ring { opacity: 0.6; }
-    [data-state="user-speaking"] .ring-1 { border-color: rgba(52,168,83,0.3); animation: ring-expand 2s ease-out infinite; }
-    [data-state="user-speaking"] .ring-2 { border-color: rgba(66,133,244,0.2); animation: ring-expand 2s ease-out 0.4s infinite; }
-    [data-state="user-speaking"] .ring-3 { border-color: rgba(155,114,203,0.1); animation: ring-expand 2s ease-out 0.8s infinite; }
-
-    /* ── AI speaking ── */
-    [data-state="ai-speaking"] .orb-core {
-      background: conic-gradient(from 0deg, #4285f4, #9b72cb, #d96570, #fbbc04, #34a853, #4285f4);
-      box-shadow: 0 0 80px rgba(66,133,244,0.4), 0 0 150px rgba(155,114,203,0.2);
-      transform: scale(1.12);
-      animation: ai-spin 2s linear infinite;
-    }
-    [data-state="ai-speaking"] .orb-glow {
-      opacity: 0.7;
-      background: radial-gradient(circle, #4285f4, #9b72cb, #d96570);
-      animation: glow-pulse 1s ease-in-out infinite;
-    }
-    [data-state="ai-speaking"] .ring { opacity: 0.8; }
-    [data-state="ai-speaking"] .ring-1 { border-color: rgba(66,133,244,0.4); animation: ring-pulse 1.2s ease-in-out infinite; }
-    [data-state="ai-speaking"] .ring-2 { border-color: rgba(155,114,203,0.3); animation: ring-pulse 1.2s ease-in-out 0.2s infinite; }
-    [data-state="ai-speaking"] .ring-3 { border-color: rgba(217,101,112,0.2); animation: ring-pulse 1.2s ease-in-out 0.4s infinite; }
-
-    /* ── Error ── */
-    [data-state="error"] .orb-core {
-      background: conic-gradient(from 0deg, #d96570, #aa3a44, #d96570);
-      box-shadow: 0 0 40px rgba(217,101,112,0.2);
-      animation: none;
-    }
-    [data-state="error"] .orb-glow { opacity: 0.2; background: #d96570; }
-
-    @keyframes spin { to { transform: rotate(360deg); } }
-    @keyframes gentle-rotate { to { transform: rotate(360deg); } }
-    @keyframes ai-spin { to { transform: scale(1.12) rotate(360deg); } }
-    @keyframes glow-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
-    @keyframes glow-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); opacity: 0.9; } }
-    @keyframes ring-expand { 0% { transform: scale(0.9); opacity: 0.6; } 100% { transform: scale(1.15); opacity: 0; } }
-    @keyframes ring-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.06); } }
-
-    #status {
-      position: fixed;
-      bottom: 32px;
-      left: 0; right: 0;
-      text-align: center;
-      font-size: 13px;
-      color: rgba(255,255,255,0.4);
-      opacity: 0;
-      transition: opacity 0.4s;
-      pointer-events: none;
-    }
-    #status.show { opacity: 1; }
+    .you { color: #cfcfe8; } .nemo { color: #b794f6; } .sys { color: #666; font-size: 11px; }
   </style>
 </head>
 <body>
-  <div id="app" data-state="idle">
-    <div class="orb-container" id="orb-wrap">
-      <div class="ring ring-1"></div>
-      <div class="ring ring-2"></div>
-      <div class="ring ring-3"></div>
-      <div class="orb-glow"></div>
-      <div class="orb-core"></div>
-    </div>
+  <h1>Nemo Voice — backend test client</h1>
+  <div class="sub">Streams mic → :3002 bridge → Deepgram, plays replies live. Proves the backend independent of the APK.</div>
+
+  <div class="row">
+    <input id="host" placeholder="host or full wss:// URL">
+    <input id="port" placeholder="3002" style="max-width:90px">
   </div>
-  <div id="status"></div>
+  <div class="row">
+    <input id="token" type="password" placeholder="NEMO_APP_TOKEN">
+    <button id="btn">Connect</button>
+  </div>
+
+  <div class="orb" id="orb"></div>
+  <div id="state">idle</div>
+  <div id="meter" style="font-family:monospace;font-size:13px;color:#555;letter-spacing:1px;margin-bottom:10px;min-height:18px"></div>
+  <div id="log"></div>
 
 <script>
-// =====================================================================
-// Nemo Voice — ADK WebSocket Client with Orb UI
-// Supports both anonymous (direct visit) and authenticated (Telegram mini app)
-// =====================================================================
+// ── Nemo Voice test client. Mirrors the current streaming_service.py protocol:
+//   send: {type:'auth',token}  then  {type:'audio',data:<b64 pcm16 16k>}
+//   recv: ready | agent_audio_start | audio(b64 pcm16 24k) | turn_complete
+//         | interrupted | user_transcript | text | error
+// Playback is continuous (no whole-turn buffering); 'interrupted' flushes it.
+const $ = (id) => document.getElementById(id);
+const hostEl = $('host'), portEl = $('port'), tokenEl = $('token');
+const btn = $('btn'), orb = $('orb'), stateEl = $('state'), logEl = $('log'), meterEl = $('meter');
 
-const tg = window.Telegram?.WebApp;
-if (tg) { tg.expand(); tg.ready(); tg.disableVerticalSwipes?.(); }
+const SAMPLE_IN = 16000, SAMPLE_OUT = 24000;
+let ws = null, micCtx = null, micStream = null, micNode = null, micSource = null;
+let playCtx = null, playNode = null, connected = false;
 
-const app      = document.getElementById('app');
-const statusEl = document.getElementById('status');
-const orbWrap  = document.getElementById('orb-wrap');
+// Restore last-used values.
+hostEl.value = localStorage.getItem('nemo_host') || location.hostname || 'localhost';
+portEl.value = localStorage.getItem('nemo_port') || '3002';
+tokenEl.value = localStorage.getItem('nemo_token') || '';
+const q = new URLSearchParams(location.search);
+if (q.get('host')) hostEl.value = q.get('host');
+if (q.get('token')) tokenEl.value = q.get('token');
 
-// -- State --
-let ws           = null;
-let captureCtx   = null;
-let playbackCtx  = null;
-let mediaStream  = null;
-let captureNode  = null;
-let playbackNode = null;
-let gainNode     = null;
-let state        = 'idle';
-let statusTimer  = null;
-let userContext  = null; // null = anonymous, object = authenticated
-let geoBlocked   = false;
+function log(cls, msg) {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg;
+  logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+}
+function setState(s, cls) { stateEl.textContent = s; orb.className = 'orb' + (cls ? ' ' + cls : ''); }
 
-const SPEAK_RMS = 0.008;
-
-// Countries where Gemini API is NOT available
-const BLOCKED_COUNTRIES = [
-  'CN', 'RU', 'BY', 'IR', 'KP', 'CU', 'SY', 'MM', 'HK',
-];
-
-async function checkGeoRestriction() {
-  try {
-    const res = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return true; // allow on error
-    const data = await res.json();
-    const code = (data.country_code || '').toUpperCase();
-    const name = data.country_name || code;
-    if (BLOCKED_COUNTRIES.includes(code)) {
-      geoBlocked = true;
-      setState('error');
-      showStatus(`Sorry, you're in ${name} — not yet supported by Nemo Voice. We're working on it!`, 0);
-      return false;
+// ── Continuous PCM playback via an inline AudioWorklet ring buffer ──
+const PLAYER_WORKLET = `
+class PCMQueue extends AudioWorkletProcessor {
+  constructor() { super(); this.q = []; this.cur = null; this.pos = 0;
+    this.port.onmessage = (e) => {
+      if (e.data === 'flush') { this.q = []; this.cur = null; this.pos = 0; }
+      else this.q.push(e.data);
+    };
+  }
+  process(_, outputs) {
+    const out = outputs[0][0]; let i = 0;
+    while (i < out.length) {
+      if (!this.cur || this.pos >= this.cur.length) {
+        if (!this.q.length) { while (i < out.length) out[i++] = 0; break; }
+        this.cur = this.q.shift(); this.pos = 0;
+      }
+      out[i++] = this.cur[this.pos++];
     }
     return true;
-  } catch {
-    return true; // allow on network error
   }
 }
+registerProcessor('pcm-queue', PCMQueue);
+`;
 
-// -- UI --
-function setState(s) {
-  state = s;
-  app.dataset.state = s;
+async function initPlayback() {
+  playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_OUT });
+  const url = URL.createObjectURL(new Blob([PLAYER_WORKLET], { type: 'application/javascript' }));
+  await playCtx.audioWorklet.addModule(url);
+  playNode = new AudioWorkletNode(playCtx, 'pcm-queue');
+  playNode.connect(playCtx.destination);
 }
 
-function showStatus(msg, dur) {
-  statusEl.textContent = msg;
-  statusEl.classList.add('show');
-  clearTimeout(statusTimer);
-  if (dur) statusTimer = setTimeout(() => statusEl.classList.remove('show'), dur);
+function playChunk(b64) {
+  if (!playNode) return;
+  if (playCtx.state === 'suspended') playCtx.resume();
+  const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const i16 = new Int16Array(bytes.buffer);
+  const f32 = new Float32Array(i16.length);
+  for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
+  playNode.port.postMessage(f32);
 }
+function flushPlayback() { if (playNode) playNode.port.postMessage('flush'); }
 
-function hideStatus() { statusEl.classList.remove('show'); clearTimeout(statusTimer); }
-
-// =====================================================================
-// Auth — check if opened via Telegram mini app
-// =====================================================================
-async function fetchUserContext() {
-  const initData = tg?.initData || '';
-  if (!initData) return null; // Anonymous — no Telegram context
-
-  try {
-    const res = await fetch('/api/live-config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ init_data: initData }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return {
-      user_name: data.user_name || '',
-      user_memory: data.user_memory || '',
-      personality: data.personality || '',
-      recent_messages: data.recent_messages || '',
-      user_id: tg?.initDataUnsafe?.user?.id || 0,
-    };
-  } catch (e) {
-    console.error('Auth failed:', e);
-    return null;
+// ── Mic capture via AudioWorklet, resampled to 16kHz inside the worklet ──
+// ScriptProcessor + an unreferenced MediaStreamAudioSourceNode is the classic
+// Chrome "all zeros" capture bug: Chrome GCs the source node and the audio
+// silently goes to digital silence while the graph keeps ticking. So we keep a
+// GLOBAL ref to the source, resume() the context, and use a worklet.
+const CAPTURE_WORKLET = `
+class PCM16Capture extends AudioWorkletProcessor {
+  constructor() { super(); this.target = 16000; this.ratio = sampleRate / this.target;
+    this.pos = 0; this.pending = []; this.chunk = []; this.chunkSize = 1600; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (!ch || ch.length === 0) return true;
+    for (let i = 0; i < ch.length; i++) this.pending.push(ch[i]);
+    while (this.pos + 1 < this.pending.length) {
+      const i0 = Math.floor(this.pos), f = this.pos - i0;
+      const s = this.pending[i0] + (this.pending[i0 + 1] - this.pending[i0]) * f;
+      const c = Math.max(-1, Math.min(1, s));
+      this.chunk.push((c < 0 ? c * 0x8000 : c * 0x7fff) | 0);
+      this.pos += this.ratio;
+      if (this.chunk.length >= this.chunkSize) {
+        const out = new Int16Array(this.chunk);
+        this.port.postMessage(out.buffer, [out.buffer]);
+        this.chunk = [];
+      }
+    }
+    const consumed = Math.floor(this.pos);
+    if (consumed > 0) { this.pending.splice(0, consumed); this.pos -= consumed; }
+    return true;
   }
 }
+registerProcessor('pcm16-capture', PCM16Capture);
+`;
 
-// =====================================================================
-// WebSocket connection to ADK server
-// =====================================================================
-function connectToServer() {
-  return new Promise((resolve, reject) => {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${wsProtocol}//${window.location.host}/ws`;
-    ws = new WebSocket(url);
-
-    const timeout = setTimeout(() => { ws.close(); reject(new Error('Connection timed out')); }, 15000);
-
-    ws.onopen = () => {};
-
-    ws.onmessage = async (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch { return; }
-
-      if (data.type === 'ready') {
-        clearTimeout(timeout);
-        // Send auth context if we have it
-        if (userContext) {
-          ws.send(JSON.stringify({
-            type: 'auth',
-            user_id: userContext.user_id,
-            user_name: userContext.user_name,
-            user_memory: userContext.user_memory,
-            personality: userContext.personality,
-            recent_messages: userContext.recent_messages,
-          }));
-        }
-        resolve();
-        return;
-      }
-
-      if (data.type === 'audio') {
-        playAudioChunk(data.data);
-        if (state !== 'ai-speaking') setState('ai-speaking');
-      }
-
-      if (data.type === 'text') console.log('AI:', data.data);
-      if (data.type === 'user_transcript') console.log('User:', data.data);
-      if (data.type === 'turn_complete') setState('listening');
-
-      if (data.type === 'interrupted') {
-        interruptPlayback();
-        setState('user-speaking');
-      }
-
-      if (data.type === 'session_id') console.log('Session:', data.data);
-    };
-
-    ws.onerror = () => {};
-    ws.onclose = () => {
-      clearTimeout(timeout);
-      ws = null;
-      if (state !== 'idle') {
-        stopMic(); destroyPlayback();
-        setState('error');
-        showStatus('Disconnected — tap to reconnect', 0);
-      }
-    };
-  });
-}
-
-// =====================================================================
-// Mic capture via AudioWorklet (16kHz PCM16)
-// =====================================================================
 async function startMic() {
-  if (!captureCtx) {
-    captureCtx = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: 16000, latencyHint: 'interactive'
-    });
-  }
-  if (captureCtx.state === 'suspended') await captureCtx.resume();
-
-  await captureCtx.audioWorklet.addModule('/audio-processors/capture.worklet.js');
-
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  micCtx = new (window.AudioContext || window.webkitAudioContext)();
+  await micCtx.resume();
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
-
-  const source = captureCtx.createMediaStreamSource(mediaStream);
-  captureNode = new AudioWorkletNode(captureCtx, 'capture-processor');
-
-  captureNode.port.onmessage = (e) => {
+  const track = micStream.getAudioTracks()[0];
+  const st = track.getSettings ? track.getSettings() : {};
+  log('sys', `mic: "${track.label || '?'}" muted=${track.muted} enabled=${track.enabled} state=${track.readyState} rate=${st.sampleRate || micCtx.sampleRate}`);
+  track.onmute = () => log('sys', '⚠ mic track MUTED by OS/another app');
+  track.onunmute = () => log('sys', 'mic track unmuted');
+  micSource = micCtx.createMediaStreamSource(micStream); // global ref → no GC
+  const url = URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: 'application/javascript' }));
+  await micCtx.audioWorklet.addModule(url);
+  micNode = new AudioWorkletNode(micCtx, 'pcm16-capture');
+  micNode.port.onmessage = (e) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const { pcm, rms } = e.data;
-
-    if (rms > SPEAK_RMS && state === 'listening') setState('user-speaking');
-    else if (rms <= SPEAK_RMS && state === 'user-speaking') setState('listening');
-
-    const bytes = new Uint8Array(pcm);
+    const i16 = new Int16Array(e.data);
+    let peak = 0;
+    for (let i = 0; i < i16.length; i++) { const a = Math.abs(i16[i]); if (a > peak) peak = a; }
+    showLevel(peak / 32768);
+    const bytes = new Uint8Array(e.data);
     let bin = '';
-    for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     ws.send(JSON.stringify({ type: 'audio', data: btoa(bin) }));
   };
-
-  source.connect(captureNode);
-  const silentGain = captureCtx.createGain();
-  silentGain.gain.value = 0;
-  captureNode.connect(silentGain);
-  silentGain.connect(captureCtx.destination);
+  micSource.connect(micNode);
+  micNode.connect(micCtx.destination);
 }
 
-function stopMic() {
-  if (captureNode) { captureNode.disconnect(); captureNode = null; }
-  if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-  if (captureCtx) { captureCtx.close().catch(() => {}); captureCtx = null; }
+let _lvlTick = 0;
+function showLevel(peak) {
+  // Throttle DOM updates; render a tiny bar so you can see your voice register.
+  if ((_lvlTick++ & 3) !== 0) return;
+  const bars = Math.min(20, Math.round(peak * 60));
+  meterEl.textContent = '🎙 ' + '▮'.repeat(bars) + '▯'.repeat(20 - bars);
+  meterEl.style.color = peak > 0.02 ? '#34a853' : '#555';
 }
 
-// =====================================================================
-// Playback via AudioWorklet (24kHz)
-// =====================================================================
-async function initPlayback() {
-  if (playbackNode) return;
-  playbackCtx = new (window.AudioContext || window.webkitAudioContext)({
-    sampleRate: 24000, latencyHint: 'interactive'
-  });
-  await playbackCtx.audioWorklet.addModule('/audio-processors/playback.worklet.js');
-  playbackNode = new AudioWorkletNode(playbackCtx, 'pcm-processor');
-  gainNode = playbackCtx.createGain();
-  gainNode.gain.value = 1.0;
-  playbackNode.connect(gainNode);
-  gainNode.connect(playbackCtx.destination);
+function stopAll() {
+  if (micNode) { micNode.disconnect(); micNode = null; }
+  if (micSource) { micSource.disconnect(); micSource = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (micCtx) { micCtx.close().catch(() => {}); micCtx = null; }
+  if (playNode) { playNode.disconnect(); playNode = null; }
+  if (playCtx) { playCtx.close().catch(() => {}); playCtx = null; }
+  if (ws) { try { ws.close(1000, 'user'); } catch {} ws = null; }
+  connected = false; btn.textContent = 'Connect'; btn.classList.remove('stop');
 }
 
-function playAudioChunk(base64) {
-  if (!playbackNode || !playbackCtx) return;
-  if (playbackCtx.state === 'suspended') playbackCtx.resume();
-  const bin = atob(base64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const int16 = new Int16Array(bytes.buffer);
-  const f32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
-  playbackNode.port.postMessage(f32);
-}
+async function connect() {
+  const host = hostEl.value.trim(), port = portEl.value.trim() || '3002', token = tokenEl.value.trim();
+  if (!host || !token) { log('sys', 'Need host + token.'); return; }
+  localStorage.setItem('nemo_host', host);
+  localStorage.setItem('nemo_port', port);
+  localStorage.setItem('nemo_token', token);
 
-function interruptPlayback() {
-  if (playbackNode) playbackNode.port.postMessage('interrupt');
-}
+  setState('connecting…'); logEl.innerHTML = '';
+  try { await initPlayback(); } catch (e) { log('sys', 'playback init failed: ' + e); }
 
-function destroyPlayback() {
-  if (playbackNode) { playbackNode.disconnect(); playbackNode = null; }
-  if (gainNode) { gainNode.disconnect(); gainNode = null; }
-  if (playbackCtx) { playbackCtx.close().catch(() => {}); playbackCtx = null; }
-}
+  // host may be a bare host (build scheme+port) or a full ws/wss URL (use as-is,
+  // e.g. a Cloudflare tunnel: wss://xxx.trycloudflare.com).
+  let url;
+  if (/^wss?:\/\//i.test(host)) url = host;
+  else url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${host}:${port}`;
+  ws = new WebSocket(url);
 
-// =====================================================================
-// Main
-// =====================================================================
-async function start() {
-  if (geoBlocked) return;
-  setState('connecting');
-  showStatus('Connecting...', 0);
-  destroyPlayback();
+  ws.onopen = () => { ws.send(JSON.stringify({ type: 'auth', token })); log('sys', 'socket open → sent auth'); };
+  ws.onerror = () => { setState('connection error', 'error'); log('sys', 'WebSocket error (host/port reachable? wss needed?)'); };
+  ws.onclose = (e) => {
+    if (connected) log('sys', `disconnected (code ${e.code}${e.reason ? ' ' + e.reason : ''})`);
+    setState('disconnected', connected ? 'error' : '');
+    stopAll();
+  };
 
-  try {
-    // Check geo restriction on first connect
-    const allowed = await checkGeoRestriction();
-    if (!allowed) return;
-
-    // Try to authenticate via Telegram if available
-    userContext = await fetchUserContext();
-    if (userContext) {
-      console.log('Authenticated as:', userContext.user_name, '(id:', userContext.user_id, ')');
-    } else {
-      console.log('Anonymous session — limited tools');
+  ws.onmessage = async (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    switch (m.type) {
+      case 'ready':
+        connected = true; btn.textContent = 'Disconnect'; btn.classList.add('stop');
+        setState('listening — speak now', 'listening');
+        try { await startMic(); } catch (e) { setState('mic blocked', 'error'); log('sys', 'mic error: ' + e); }
+        break;
+      case 'agent_audio_start': setState('Nemo speaking…', 'speaking'); break;
+      case 'audio': playChunk(m.data); break;
+      case 'turn_complete': setState('listening', 'listening'); break;
+      case 'interrupted': flushPlayback(); setState('listening', 'listening'); break;
+      case 'user_transcript': log('you', 'You: ' + m.data); break;
+      case 'text': log('nemo', 'Nemo: ' + m.data); break;
+      case 'error': setState('error', 'error'); log('sys', '⚠ ' + (m.message || 'error')); break;
     }
-
-    await initPlayback();
-    await connectToServer();
-    await startMic();
-    setState('listening');
-    hideStatus();
-  } catch (e) {
-    setState('error');
-    showStatus(e.message || 'Connection failed — tap to retry', 0);
-  }
+  };
 }
 
-function disconnect() {
-  setState('idle');
-  stopMic(); destroyPlayback();
-  if (ws) { ws.close(1000, 'user disconnect'); ws = null; }
-  hideStatus();
-  showStatus('Tap to connect', 2000);
-}
-
-orbWrap.addEventListener('click', () => {
-  if (geoBlocked) return;
-  if (state === 'idle' || state === 'error') start();
-  else if (['listening', 'user-speaking', 'ai-speaking'].includes(state)) disconnect();
-});
-
-showStatus('Tap to connect', 0);
+btn.onclick = () => { connected || ws ? stopAll() : connect(); if (!ws) setState('idle'); };
 </script>
 </body>
 </html>

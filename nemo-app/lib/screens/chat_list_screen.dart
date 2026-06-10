@@ -73,6 +73,20 @@ class _ChatListScreenState extends State<ChatListScreen> {
     }
   }
 
+  Future<void> _startVoice() async {
+    final host = _extractHost(context.read<NemoService>().serverUrl);
+    final wake = context.read<WakeWordService>();
+    await wake.stop(); // free the mic for the voice recorder
+    if (!mounted) return;
+    await Navigator.push(context, PageRouteBuilder(
+      pageBuilder: (_, __, ___) =>
+          VoiceChatScreen(serverHost: host, autoStart: true),
+      transitionDuration: const Duration(milliseconds: 200),
+      transitionsBuilder: (_, a, __, c) => FadeTransition(opacity: a, child: c),
+    ));
+    if (mounted) await wake.start();
+  }
+
   Future<void> _load() async {
     final sessions = await ChatStorage.getSessions();
     setState(() => _sessions = sessions);
@@ -240,15 +254,47 @@ class _ChatListScreenState extends State<ChatListScreen> {
           child: _sessions.isEmpty
               ? Center(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    const Text('👋', style: TextStyle(fontSize: 48)),
-                    const SizedBox(height: 16),
-                    const Text('No conversations yet',
-                        style: TextStyle(color: Colors.white38, fontSize: 16)),
+                    Container(
+                      width: 96, height: 96,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF7C3AED), Color(0xFF3B82F6)],
+                          begin: Alignment.topLeft, end: Alignment.bottomRight,
+                        ),
+                        boxShadow: [BoxShadow(
+                          color: const Color(0xFF7C3AED).withValues(alpha: 0.4),
+                          blurRadius: 28, spreadRadius: 2)],
+                      ),
+                      child: const Icon(Icons.graphic_eq,
+                          color: Colors.white, size: 44),
+                    ),
                     const SizedBox(height: 24),
+                    const Text('Hey, I\'m Nemo',
+                        style: TextStyle(color: Colors.white, fontSize: 22,
+                            fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 8),
+                    const Text('Talk to me out loud, or start a text chat.',
+                        style: TextStyle(color: Colors.white38, fontSize: 14)),
+                    const SizedBox(height: 28),
                     FilledButton.icon(
+                      onPressed: _startVoice,
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF7C3AED),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 28, vertical: 14),
+                      ),
+                      icon: const Icon(Icons.mic),
+                      label: const Text('Talk to Nemo',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                    ),
+                    const SizedBox(height: 10),
+                    TextButton.icon(
                       onPressed: _newChat,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Start a conversation'),
+                      icon: const Icon(Icons.edit_outlined, size: 18),
+                      label: const Text('New text chat'),
+                      style: TextButton.styleFrom(
+                          foregroundColor: Colors.white54),
                     ),
                   ]),
                 )
@@ -309,10 +355,30 @@ class _ChatListScreenState extends State<ChatListScreen> {
                 ),
         ),
       ]),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _newChat,
-        backgroundColor: const Color(0xFF7C3AED),
-        child: const Icon(Icons.add, color: Colors.white),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'newChat',
+            onPressed: _newChat,
+            backgroundColor: const Color(0xFF1E1E2E),
+            foregroundColor: Colors.white,
+            elevation: 0,
+            tooltip: 'New text chat',
+            child: const Icon(Icons.edit_outlined),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton.extended(
+            heroTag: 'voice',
+            onPressed: _startVoice,
+            backgroundColor: const Color(0xFF7C3AED),
+            foregroundColor: Colors.white,
+            icon: const Icon(Icons.mic),
+            label: const Text('Talk to Nemo',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
       ),
     );
   }

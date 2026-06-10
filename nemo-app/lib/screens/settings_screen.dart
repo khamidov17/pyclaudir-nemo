@@ -127,7 +127,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       style: TextStyle(
                           color: Colors.white70, fontWeight: FontWeight.bold)),
                   subtitle: const Text(
-                    'Say "nemo" / "hey nemo" to open Gemini voice. On-device, no '
+                    'Say "nemo" / "hey nemo" to open Nemo voice. On-device, no '
                     'API key. Off by default. Nemo uses long listening windows '
                     'to avoid repeated Android listen chimes.',
                     style: TextStyle(color: Colors.white38, fontSize: 13),
