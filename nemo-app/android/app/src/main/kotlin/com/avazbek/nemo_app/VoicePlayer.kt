@@ -34,9 +34,10 @@ class VoicePlayer(private val context: Context) {
     /** Reported when playback starves (choppy voice). Set by MainActivity. */
     var onUnderrun: ((Int) -> Unit)? = null
 
-    // ~1.5s ceiling. Big enough to ride out real jitter without choppiness;
+    // ~3s ceiling. Larger so a lossy long-haul link (China↔Europe↔Singapore)
+    // can burst without the queue overflowing into dropped audio (choppiness);
     // only a severe stall ever trims it (oldest first) so latency can't run away.
-    private val maxQueuedBytes get() = sampleRate * 2 * 3 / 2
+    private val maxQueuedBytes get() = sampleRate * 2 * 3
 
     fun start(rate: Int) {
         if (track != null) return
@@ -49,7 +50,7 @@ class VoicePlayer(private val context: Context) {
         // every hiccup = choppy speech. A bigger buffer rides out the jitter.
         // NOTE: this latency is matched by the +1100ms mic-mute tail in the
         // screen so Nemo's buffered tail can't echo into a false barge-in.
-        val bufBytes = maxOf(min, sampleRate * 2 * 4 / 5)
+        val bufBytes = maxOf(min, sampleRate * 2 * 6 / 5)
 
         // USAGE_ASSISTANT: same full-bandwidth loudspeaker route as MEDIA, but
         // identifies this stream as the assistant's voice so the system mixes

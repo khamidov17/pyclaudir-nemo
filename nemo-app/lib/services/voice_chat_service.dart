@@ -31,6 +31,15 @@ class VoiceChatService extends ChangeNotifier {
   bool _active = false;
   bool get isActive => _active;
 
+  // Reconnection: on a transient WS drop (flaky network) we re-open the socket
+  // and re-auth WITHOUT tearing down the mic/player — the server restores the
+  // conversation context on the new session, so the talk resumes seamlessly.
+  String? _host;
+  bool _userStopping = false;
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  static const _maxReconnects = 6;
+
   // Soft half-duplex: while Nemo is speaking we stop forwarding mic audio to
   // Deepgram so his own voice (echoing from the speaker on the clear media
   // playback path, which has no hardware AEC reference) can't be heard as the
@@ -86,6 +95,9 @@ class VoiceChatService extends ChangeNotifier {
 
   Future<bool> start(String serverHost) async {
     if (_active) return true;
+    _host = serverHost;
+    _userStopping = false;
+    _reconnectAttempts = 0;
 
     // One audio session for the whole chat: record captures the mic while the
     // native player (VoicePlayer.kt) plays Nemo's reply. Google-Assistant
@@ -112,44 +124,11 @@ class VoiceChatService extends ChangeNotifier {
       debugPrint('audio session configure failed: $e');
     }
 
-    final uri = _voiceUri(serverHost);
-    try {
-      _ws = IOWebSocketChannel.connect(
-        uri,
-        customClient: await SecureNet.httpClient(),
-      );
-      await _ws!.ready.timeout(const Duration(seconds: 8));
-    } catch (e) {
+    if (!await _openSocket(_voiceUri(serverHost))) {
       _errors.add('Voice server is not reachable. Check nemo-voice service.');
       await stop();
       return false;
     }
-
-    // Authenticate with same token as main app, plus a stable device id (the
-    // server can pin voice sessions to known devices) and the chosen Nemo
-    // voice (server-whitelisted; falls back to the Jarvis default).
-    final token = await _storage.read(key: 'app_token') ?? '';
-    final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
-    final deviceId = await _deviceId();
-    _ws!.sink.add(jsonEncode({
-      'type': 'auth',
-      'token': token,
-      'device_id': deviceId,
-      'voice': voice,
-    }));
-
-    // Listen for responses from nemo-voice
-    _wsSub = _ws!.stream.listen(
-      _onMessage,
-      onError: (e) {
-        _errors.add('Voice connection failed: $e');
-        stop();
-      },
-      onDone: () {
-        if (_active) _errors.add('Voice server disconnected.');
-        stop();
-      },
-    );
 
     // Start recording and streaming
     _recorder = AudioRecorder();
@@ -197,8 +176,68 @@ class VoiceChatService extends ChangeNotifier {
       }
     });
 
-    debugPrint('VoiceChatService: started → $uri');
+    debugPrint('VoiceChatService: started → $serverHost');
     return true;
+  }
+
+  /// Open (or re-open) the WS to the bridge and authenticate. Returns false on
+  /// failure. The recorder/player are untouched, so this also serves reconnect.
+  Future<bool> _openSocket(Uri uri) async {
+    try {
+      _ws = IOWebSocketChannel.connect(
+        uri,
+        customClient: await SecureNet.httpClient(),
+      );
+      await _ws!.ready.timeout(const Duration(seconds: 8));
+    } catch (e) {
+      _ws = null;
+      return false;
+    }
+    final token = await _storage.read(key: 'app_token') ?? '';
+    final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
+    final deviceId = await _deviceId();
+    _ws!.sink.add(jsonEncode({
+      'type': 'auth',
+      'token': token,
+      'device_id': deviceId,
+      'voice': voice,
+    }));
+    _wsSub?.cancel();
+    _wsSub = _ws!.stream.listen(
+      _onMessage,
+      onError: (_) => _onDrop(),
+      onDone: _onDrop,
+    );
+    return true;
+  }
+
+  /// WS dropped. If the user didn't stop, retry with backoff instead of ending
+  /// the session — the conversation resumes on the new server session.
+  void _onDrop() {
+    if (_userStopping || !_active) return;
+    _ws = null;
+    if (_reconnectAttempts >= _maxReconnects) {
+      _errors.add('Voice connection lost — tap to reconnect.');
+      stop();
+      return;
+    }
+    _controls.add('reconnecting');
+    final delayMs = (500 * (1 << _reconnectAttempts)).clamp(500, 8000);
+    _reconnectAttempts++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(Duration(milliseconds: delayMs), _reconnect);
+  }
+
+  Future<void> _reconnect() async {
+    if (_userStopping || !_active || _host == null) return;
+    if (await _openSocket(_voiceUri(_host!))) {
+      _reconnectAttempts = 0;
+      _muted = false;
+      _muteWatchdog?.cancel();
+      _controls.add('reconnected');
+    } else {
+      _onDrop();
+    }
   }
 
   void _onMessage(dynamic raw) {
@@ -259,6 +298,9 @@ class VoiceChatService extends ChangeNotifier {
 
   Future<void> stop() async {
     _active = false;
+    _userStopping = true;
+    _reconnectTimer?.cancel();
+    _reconnectAttempts = 0;
     await _recorderSub?.cancel();
     await _recorder?.stop();
     _recorder?.dispose();

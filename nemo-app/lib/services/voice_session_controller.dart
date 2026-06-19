@@ -49,9 +49,11 @@ class VoiceSessionController extends ChangeNotifier {
   // exceed the longest real reply — a 6s cap used to reopen the mic mid-reply
   // and the idle timer would then kill the session while Nemo was talking.
   static const _maxMuteMs = 30000;
-  // Auto-pause after silence so an idle session doesn't keep billing
-  // Deepgram minutes. Armed only while the mic is open (the user's turn).
-  static const idleTimeout = Duration(seconds: 15);
+  // Auto-pause after a LONG silence so a forgotten session eventually releases
+  // the mic back to the wake word. Generous (2 min) so normal thinking pauses —
+  // or a dropped/late user transcript — never cut the conversation short. The
+  // server's own 300s idle timeout is the real ceiling.
+  static const idleTimeout = Duration(seconds: 120);
   Timer? _idleTimer;
   int _turnChunks = 0;
   int _turnBytes = 0;
@@ -122,6 +124,19 @@ class VoiceSessionController extends ChangeNotifier {
       _unmuteTimer?.cancel();
       _voice.setMuted(false);
       _resetIdle();
+    } else if (signal == 'reconnecting') {
+      // Connection dropped — don't idle-close while we retry; the server
+      // restores context on the new session so the talk resumes seamlessly.
+      _idleTimer?.cancel();
+      _unmuteTimer?.cancel();
+      _add('… reconnecting');
+    } else if (signal == 'reconnected') {
+      // Fresh session is up — clear half-duplex state so the mic is live.
+      nemoSpeaking = false;
+      _estPlaybackEndMs = 0;
+      _player.flush();
+      _resetIdle();
+      _add('✓ reconnected');
     }
     notifyListeners();
   }

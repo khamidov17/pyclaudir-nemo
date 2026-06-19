@@ -24,7 +24,7 @@ _DATA_DIR = Path(
 )
 _RECENT = _DATA_DIR / "voice_recent.json"
 _JOURNAL = _DATA_DIR / "voice_journal.jsonl"
-_MAX_TURNS = 16
+_MAX_TURNS = 24
 
 
 def _load_recent() -> list[dict]:
@@ -51,7 +51,7 @@ def add(role: str, text: str) -> None:
         LOG.warning("voice history write failed: %s", exc)
 
 
-def recent(limit: int = 12) -> str:
+def recent(limit: int = 18) -> str:
     """The last `limit` spoken turns, formatted for the prompt (oldest first)."""
     items = _load_recent()[-limit:]
     return "\n".join(

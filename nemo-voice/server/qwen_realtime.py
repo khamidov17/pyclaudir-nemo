@@ -172,20 +172,33 @@ async def _inject_text(qwen, text: str) -> None:
 class _QwenPump:
     """Qwen → App: translate Qwen realtime events into our app protocol."""
 
+    # If audio has been flowing but neither more audio nor response.done arrives
+    # for this long, treat the turn as finished — covers a lost/late
+    # response.done on the flaky link so the app's mic isn't stuck muted.
+    _TURN_IDLE_SEC = 2.5
+
     def __init__(self, qwen, client_ws, bridge) -> None:
         self.qwen = qwen
         self.client_ws = client_ws
         self.bridge = bridge
         self.agent_started = False
         self._reply = ""  # accumulates Nemo's spoken text for this turn
+        self._turn_timer: asyncio.Task | None = None
+        # Serialize sends to the app socket — the turn watchdog runs as its own
+        # task and must not interleave WS frames with the main pump.
+        self._send_lock = asyncio.Lock()
 
     async def run(self) -> None:
-        async for raw in self.qwen:
-            try:
-                ev = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            await self._dispatch(ev)
+        try:
+            async for raw in self.qwen:
+                try:
+                    ev = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                await self._dispatch(ev)
+        finally:
+            if self._turn_timer:
+                self._turn_timer.cancel()
 
     async def _dispatch(self, ev: dict) -> None:
         ev_type = ev.get("type")
@@ -208,17 +221,49 @@ class _QwenPump:
             await self._error(ev)
 
     async def _send(self, msg: dict) -> None:
-        await self.client_ws.send(json.dumps(msg))
+        async with self._send_lock:
+            await self.client_ws.send(json.dumps(msg))
 
     async def _audio(self, ev: dict) -> None:
         if not self.agent_started:
             self.agent_started = True
             await self._send({"type": "agent_audio_start"})
         await self._send({"type": "audio", "data": ev.get("delta", "")})
+        self._arm_turn_timer()
+
+    def _arm_turn_timer(self) -> None:
+        if self._turn_timer:
+            self._turn_timer.cancel()
+        self._turn_timer = asyncio.create_task(self._turn_timeout())
+
+    async def _turn_timeout(self) -> None:
+        try:
+            await asyncio.sleep(self._TURN_IDLE_SEC)
+            await self._complete_turn()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:  # noqa: BLE001 — never crash the watchdog
+            LOG.debug("turn watchdog: %s", exc)
+
+    async def _complete_turn(self) -> None:
+        """End the current agent turn exactly once (from response.done OR the
+        idle watchdog), telling the app to reopen the mic and saving the reply."""
+        if self._turn_timer:
+            self._turn_timer.cancel()
+            self._turn_timer = None
+        if self.agent_started:
+            self.agent_started = False
+            await self._send({"type": "turn_complete"})
+        if self._reply.strip():
+            voice_history.add("nemo", self._reply)
+            self._reply = ""
 
     async def _barge_in(self) -> None:
         if not self.agent_started:
             return
+        if self._turn_timer:
+            self._turn_timer.cancel()
+            self._turn_timer = None
         self.agent_started = False
         await self._send({"type": "interrupted", "data": "barge_in"})
         await self.qwen.send(json.dumps({"type": "response.cancel"}))
@@ -229,12 +274,7 @@ class _QwenPump:
             await _handle_tool(self.qwen, self.bridge, item)
 
     async def _done(self, ev: dict) -> None:
-        if self.agent_started:
-            self.agent_started = False
-            await self._send({"type": "turn_complete"})
-        if self._reply.strip():
-            voice_history.add("nemo", self._reply)
-            self._reply = ""
+        await self._complete_turn()
         _track_usage(ev)
 
     async def _error(self, ev: dict) -> None:
