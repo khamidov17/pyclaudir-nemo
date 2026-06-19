@@ -183,27 +183,37 @@ class VoiceChatService extends ChangeNotifier {
   /// Open (or re-open) the WS to the bridge and authenticate. Returns false on
   /// failure. The recorder/player are untouched, so this also serves reconnect.
   Future<bool> _openSocket(Uri uri) async {
+    // Drop any previous listener FIRST so an old connection's events can't leak
+    // into the new session.
+    await _wsSub?.cancel();
+    _wsSub = null;
+    final IOWebSocketChannel ch;
     try {
-      _ws = IOWebSocketChannel.connect(
+      ch = IOWebSocketChannel.connect(
         uri,
         customClient: await SecureNet.httpClient(),
       );
-      await _ws!.ready.timeout(const Duration(seconds: 8));
+      await ch.ready.timeout(const Duration(seconds: 8));
     } catch (e) {
-      _ws = null;
       return false;
     }
+    // If the user stopped while we were connecting, abandon this socket — never
+    // leave a zombie connection alive after stop().
+    if (_userStopping) {
+      ch.sink.close(ws_status.goingAway);
+      return false;
+    }
+    _ws = ch;
     final token = await _storage.read(key: 'app_token') ?? '';
     final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
     final deviceId = await _deviceId();
-    _ws!.sink.add(jsonEncode({
+    ch.sink.add(jsonEncode({
       'type': 'auth',
       'token': token,
       'device_id': deviceId,
       'voice': voice,
     }));
-    _wsSub?.cancel();
-    _wsSub = _ws!.stream.listen(
+    _wsSub = ch.stream.listen(
       _onMessage,
       onError: (_) => _onDrop(),
       onDone: _onDrop,
@@ -230,7 +240,10 @@ class VoiceChatService extends ChangeNotifier {
 
   Future<void> _reconnect() async {
     if (_userStopping || !_active || _host == null) return;
-    if (await _openSocket(_voiceUri(_host!))) {
+    final ok = await _openSocket(_voiceUri(_host!));
+    // Re-check after the await: a stop() during reconnect must win.
+    if (_userStopping || !_active) return;
+    if (ok) {
       _reconnectAttempts = 0;
       _muted = false;
       _muteWatchdog?.cancel();

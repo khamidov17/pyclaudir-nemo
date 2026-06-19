@@ -174,8 +174,10 @@ class _QwenPump:
 
     # If audio has been flowing but neither more audio nor response.done arrives
     # for this long, treat the turn as finished — covers a lost/late
-    # response.done on the flaky link so the app's mic isn't stuck muted.
-    _TURN_IDLE_SEC = 2.5
+    # response.done on the flaky link so the app's mic isn't stuck muted. Kept
+    # generous (4s) so a normal packet gap mid-reply on the lossy link doesn't
+    # falsely end the turn and reopen the mic while Nemo is still speaking.
+    _TURN_IDLE_SEC = 4.0
 
     def __init__(self, qwen, client_ws, bridge) -> None:
         self.qwen = qwen
@@ -239,9 +241,13 @@ class _QwenPump:
     async def _turn_timeout(self) -> None:
         try:
             await asyncio.sleep(self._TURN_IDLE_SEC)
-            await self._complete_turn()
         except asyncio.CancelledError:
-            pass
+            return
+        # Finished sleeping — clear our own handle BEFORE _complete_turn, or it
+        # would cancel the task it's running in and abort the turn_complete send.
+        self._turn_timer = None
+        try:
+            await self._complete_turn()
         except Exception as exc:  # noqa: BLE001 — never crash the watchdog
             LOG.debug("turn watchdog: %s", exc)
 
