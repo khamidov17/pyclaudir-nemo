@@ -70,46 +70,19 @@ class MainActivity : FlutterActivity() {
                         result.success(NemoAccessibilityService.pressButton(button))
                     }
                     "getUiTree" -> result.success(NemoAccessibilityService.getUiTree())
+                    "clickByText" -> {
+                        val query = call.argument<String>("query") ?: ""
+                        result.success(NemoAccessibilityService.clickByText(query))
+                    }
+                    "clickFirstResult" -> result.success(NemoAccessibilityService.clickFirstResult())
                     else -> result.notImplemented()
                 }
             }
 
-        // ── Intents / app launcher channel ─────────────────────────────
+        // ── Intents / app launcher / alarms / contacts channel ─────────
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_INTENTS)
             .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "openApp" -> {
-                        val pkg = call.argument<String>("package") ?: ""
-                        val intent = packageManager.getLaunchIntentForPackage(pkg)
-                        if (intent != null) {
-                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(intent)
-                            result.success(true)
-                        } else {
-                            result.success(false)
-                        }
-                    }
-                    "listApps" -> {
-                        val intent = Intent(Intent.ACTION_MAIN, null).apply {
-                            addCategory(Intent.CATEGORY_LAUNCHER)
-                        }
-                        val apps = packageManager.queryIntentActivities(intent, 0)
-                            .map { it.activityInfo.packageName }.distinct().sorted()
-                        result.success(apps)
-                    }
-                    "openUrl" -> {
-                        val url = call.argument<String>("url") ?: ""
-                        try {
-                            val i = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            startActivity(i)
-                            result.success(true)
-                        } catch (e: Exception) {
-                            result.success(false)
-                        }
-                    }
-                    else -> result.notImplemented()
-                }
+                IntentActions.handle(this, call, result)
             }
 
         // ── Screenshot channel (MediaProjection) ───────────────────────
@@ -139,28 +112,38 @@ class MainActivity : FlutterActivity() {
             }
 
         // ── Voice player channel (continuous PCM16 playback) ───────────
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_VOICE)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "start" -> {
-                        voicePlayer.start(call.argument<Int>("sampleRate") ?: 24000)
-                        result.success(true)
-                    }
-                    "write" -> {
-                        val data = call.argument<ByteArray>("data")
-                        if (data != null) voicePlayer.write(data)
-                        result.success(true)
-                    }
-                    "flush" -> { voicePlayer.flush(); result.success(true) }
-                    "stop" -> { voicePlayer.stop(); result.success(true) }
-                    else -> result.notImplemented()
+        val voiceCh = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_VOICE)
+        voiceCh.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    voicePlayer.start(call.argument<Int>("sampleRate") ?: 24000)
+                    result.success(true)
                 }
+                "write" -> {
+                    val data = call.argument<ByteArray>("data")
+                    if (data != null) voicePlayer.write(data)
+                    result.success(true)
+                }
+                "flush" -> { voicePlayer.flush(); result.success(true) }
+                "stop" -> { voicePlayer.stop(); result.success(true) }
+                else -> result.notImplemented()
             }
+        }
+        // Push playback-starvation (choppy voice) events up to the Dart UI.
+        voicePlayer.onUnderrun = { count ->
+            runOnUiThread { voiceCh.invokeMethod("underrun", count) }
+        }
     }
 
     // ── MediaProjection Screenshot ─────────────────────────────────────
 
     private fun captureScreenshot(result: MethodChannel.Result) {
+        // One capture at a time: a second concurrent call would orphan the
+        // first Result (hung Dart future) and double-use the projection.
+        if (pendingScreenshotResult != null) {
+            result.error("BUSY", "screenshot already in progress", null)
+            return
+        }
         if (mediaProjection != null) {
             doCapture(result)
             return
@@ -207,6 +190,8 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             result.error("CAPTURE_FAILED", "VirtualDisplay failed: ${e.message}", null)
             imageReader.close()
+            mediaProjection?.stop()
+            mediaProjection = null
             return
         }
 
@@ -242,6 +227,11 @@ class MainActivity : FlutterActivity() {
             } finally {
                 vDisplay?.release()
                 imageReader.close()
+                // Android 14+ forbids reusing a MediaProjection for a second
+                // VirtualDisplay — release it per capture or the next one
+                // throws SecurityException.
+                mediaProjection?.stop()
+                mediaProjection = null
             }
         }, 400)
     }

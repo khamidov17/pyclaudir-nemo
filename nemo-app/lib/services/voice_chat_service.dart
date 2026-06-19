@@ -4,8 +4,10 @@ import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:record/record.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
+import 'secure_net.dart';
 
 const _storage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -63,12 +65,33 @@ class VoiceChatService extends ChangeNotifier {
   final StreamController<String> _errors = StreamController.broadcast();
   Stream<String> get errors => _errors.stream;
 
+  // Phone actions requested by the voice agent ("open spotify", "set_alarm…")
+  // — {id, command} pushed by the server, executed by PhoneCommandExecutor,
+  // answered with sendActionResult so Nemo can confirm out loud.
+  final StreamController<Map<String, dynamic>> _actions =
+      StreamController.broadcast();
+  Stream<Map<String, dynamic>> get actions => _actions.stream;
+
+  void sendActionResult(String id, {bool ok = true, String? text, String? error}) {
+    final ws = _ws;
+    if (ws == null) return;
+    ws.sink.add(jsonEncode({
+      'type': 'action_result',
+      'id': id,
+      'ok': ok,
+      if (text != null) 'text': text,
+      if (error != null) 'error': error,
+    }));
+  }
+
   Future<bool> start(String serverHost) async {
     if (_active) return true;
 
     // One audio session for the whole chat: record captures the mic while the
-    // native player (VoicePlayer.kt) plays Nemo's reply on the clear media
-    // path. Grab audio focus so other apps pause for the duration of the call.
+    // native player (VoicePlayer.kt) plays Nemo's reply. Google-Assistant
+    // semantics: TRANSIENT focus with ducking — Spotify/YouTube drop to low
+    // volume while the conversation is live and resume full volume the moment
+    // setActive(false) releases focus in stop().
     try {
       final session = await AudioSession.instance;
       await session.configure(const AudioSessionConfiguration(
@@ -78,9 +101,10 @@ class VoiceChatService extends ChangeNotifier {
         avAudioSessionMode: AVAudioSessionMode.voiceChat,
         androidAudioAttributes: AndroidAudioAttributes(
           contentType: AndroidAudioContentType.speech,
-          usage: AndroidAudioUsage.media,
+          usage: AndroidAudioUsage.assistant,
         ),
-        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+        androidAudioFocusGainType:
+            AndroidAudioFocusGainType.gainTransientMayDuck,
         androidWillPauseWhenDucked: false,
       ));
       await session.setActive(true);
@@ -90,7 +114,10 @@ class VoiceChatService extends ChangeNotifier {
 
     final uri = _voiceUri(serverHost);
     try {
-      _ws = WebSocketChannel.connect(uri);
+      _ws = IOWebSocketChannel.connect(
+        uri,
+        customClient: await SecureNet.httpClient(),
+      );
       await _ws!.ready.timeout(const Duration(seconds: 8));
     } catch (e) {
       _errors.add('Voice server is not reachable. Check nemo-voice service.');
@@ -98,11 +125,17 @@ class VoiceChatService extends ChangeNotifier {
       return false;
     }
 
-    // Authenticate with same token as main app
+    // Authenticate with same token as main app, plus a stable device id (the
+    // server can pin voice sessions to known devices) and the chosen Nemo
+    // voice (server-whitelisted; falls back to the Jarvis default).
     final token = await _storage.read(key: 'app_token') ?? '';
+    final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
+    final deviceId = await _deviceId();
     _ws!.sink.add(jsonEncode({
       'type': 'auth',
       'token': token,
+      'device_id': deviceId,
+      'voice': voice,
     }));
 
     // Listen for responses from nemo-voice
@@ -191,6 +224,8 @@ class VoiceChatService extends ChangeNotifier {
           _controls.add('interrupted');
         case 'ready':
           _controls.add('ready');
+        case 'action':
+          _actions.add(data);
         case 'error':
           _errors.add(data['message'] as String? ?? 'Voice error');
       }
@@ -199,16 +234,27 @@ class VoiceChatService extends ChangeNotifier {
     }
   }
 
+  /// A stable per-install device id, generated once and kept in secure
+  /// storage, so the server can pin voice sessions to known devices.
+  Future<String> _deviceId() async {
+    var id = await _storage.read(key: 'device_id');
+    if (id == null || id.isEmpty) {
+      id = 'phone-${DateTime.now().millisecondsSinceEpoch}';
+      await _storage.write(key: 'device_id', value: id);
+    }
+    return id;
+  }
+
   Uri _voiceUri(String server) {
+    // Accepts a bare host or the full server URL. ALWAYS wss — never cleartext,
+    // even if an old stored URL says ws://. The voice bridge always lives on
+    // its own port, never the main engine's. SecureNet pins the cert.
+    const voicePort = 3002;
     final trimmed = server.trim();
     final parsed = Uri.tryParse(trimmed);
     final fromFullUrl = parsed != null && parsed.host.isNotEmpty;
-    final scheme = fromFullUrl
-        ? (parsed.scheme == 'wss' || parsed.scheme == 'https' ? 'wss' : 'ws')
-        : 'ws';
     final host = fromFullUrl ? parsed.host : trimmed.split(':').first;
-    final port = fromFullUrl ? (parsed.hasPort ? parsed.port : 3002) : 3002;
-    return Uri(scheme: scheme, host: host, port: port);
+    return Uri(scheme: 'wss', host: host, port: voicePort);
   }
 
   Future<void> stop() async {
@@ -237,6 +283,7 @@ class VoiceChatService extends ChangeNotifier {
     _audioOut.close();
     _controls.close();
     _errors.close();
+    _actions.close();
     super.dispose();
   }
 }

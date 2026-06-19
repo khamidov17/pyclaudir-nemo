@@ -16,6 +16,11 @@ dependencies:
   # Speech-to-text — wake word + voice input, device-native, no API key
   speech_to_text: ^7.0.0
 
+  # Offline wake word — vendored fork of vosk_flutter_2 (AGP8-patched)
+  vosk_flutter_2:
+    path: plugins/vosk_flutter_2
+
+
   # Text-to-speech for Nemo's replies
   flutter_tts: ^4.2.2
 

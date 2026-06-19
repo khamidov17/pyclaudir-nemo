@@ -12,20 +12,31 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiohttp
 
+import phone_tools
+import voice_history
+
 LOG = logging.getLogger("nemo.voice_brain")
 
 # The real Nemo memory store (shared with the text assistant), not nemo_tools'
 # stale data/prod. Overridable for tests.
-_DATA_DIR = Path(os.environ.get("NEMO_VOICE_DATA_DIR") or (Path(__file__).resolve().parents[2] / "data"))
+_DATA_DIR = Path(
+    os.environ.get("NEMO_VOICE_DATA_DIR")
+    or (Path(__file__).resolve().parents[2] / "data")
+)
 _MEM_DIR = _DATA_DIR / "memories"
 _VOICE_NOTES = _MEM_DIR / "voice_notes.md"
+_DB = _DATA_DIR / "pyclaudir.db"  # the text/Telegram Nemo's conversation store
 _TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-_CHAT_ID = os.environ.get("NEMO_DEFAULT_CHAT_ID", "1965085976").strip()
+# No default chat id: a hardcoded fallback would silently message whoever it
+# points at on a misconfigured deploy. Require the env var; send_telegram
+# refuses if it's unset.
+_CHAT_ID = os.environ.get("NEMO_DEFAULT_CHAT_ID", "").strip()
 _UTC_OFFSET_HOURS = int(os.environ.get("NEMO_UTC_OFFSET", "5"))
 _MAX_MEMORY_CHARS = 4000
 
@@ -33,8 +44,20 @@ _IDENTITY = (
     "You are Nemo, Avazbek's private AI assistant, talking with him out loud by voice.\n"
     "You were created by Avazbek. Never say you are powered by Claude, GPT, Gemini, or any "
     "other AI model — you are simply Nemo. If asked about your technology, it's fine to mention Rust.\n"
-    "Speak naturally, warmly, and briefly, the way you would in a real phone call. Be concise "
-    "and genuinely useful; avoid long monologues.\n"
+    "Speak naturally and warmly, like a real phone call, clearly and at a relaxed, "
+    "unhurried pace. Answer in 1-2 short sentences unless he explicitly asks for detail "
+    "— long monologues cost money and patience.\n"
+    "Avazbek speaks English, Russian, and Uzbek, sometimes mixed and with an accent. "
+    "Listen carefully, never assume Chinese, and reply in English.\n"
+    "You can control his phone: `open_app` opens any app by name, `set_alarm`/`set_timer` "
+    "use his clock, `message_contact` sends a Telegram message by name, and "
+    "`phone_command` drives the screen step by step for anything else. After an action, "
+    "confirm the result out loud in a few words.\n"
+    "IMPORTANT: phone control needs the Nemo Accessibility Service turned on. If a phone "
+    "action returns an error that mentions 'accessibility' or 'enable', do NOT guess about "
+    "Telegram settings — tell Avazbek the exact fix out loud: 'Open your phone Settings, go "
+    "to Accessibility, find Nemo Phone Control, and turn it on, then ask me again.' When any "
+    "action fails, relay the actual error you got, don't invent a different reason.\n"
     "You share Avazbek's memory with his text assistant. When he tells you something worth "
     "keeping — a preference, a fact, a plan, a name — call `remember` so future conversations "
     "(voice or text) know it too. Use `recall` to look things up. Only send a Telegram message "
@@ -57,12 +80,73 @@ def _read_memory_digest() -> str:
     return "\n\n".join(parts).strip()[:_MAX_MEMORY_CHARS]
 
 
+def _profile() -> str:
+    """The 'who is Avazbek' digest for the prompt: his consolidated profile if
+    the text assistant has synthesized one, otherwise every saved memory file.
+    This is the spine of Nemo's memory — sent once per session, so it can be
+    generous without per-turn cost."""
+    about = _MEM_DIR / "ABOUT_ME.md"  # the text Nemo's consolidated profile
+    if about.is_file():
+        try:
+            return about.read_text().strip()[:_MAX_MEMORY_CHARS]
+        except OSError:
+            pass
+    return _read_memory_digest()
+
+
+def _recent_conversation(limit: int = 8) -> str:
+    """The last few things Avazbek said to Nemo (Telegram + voice), so a new
+    voice session continues where the last conversation left off instead of
+    starting cold. Read-only, newest last."""
+    if not _DB.exists():
+        return ""
+    try:
+        con = sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT direction, text FROM messages "
+            "WHERE COALESCE(deleted,0)=0 AND text IS NOT NULL AND text != '' "
+            "ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        con.close()
+    except Exception:
+        return ""
+    lines = [
+        f"{'Avazbek' if d == 'in' else 'Nemo'}: {(t or '').strip()[:160]}"
+        for d, t in reversed(rows)
+    ]
+    return "\n".join(lines).strip()
+
+
 def build_prompt() -> str:
-    """The voice agent's system prompt: Nemo identity + current shared memory."""
-    digest = _read_memory_digest()
-    if digest:
-        return f"{_IDENTITY}\n\nWhat you already remember about Avazbek:\n{digest}"
-    return _IDENTITY
+    """The voice agent's system prompt: Nemo identity + what he knows about
+    Avazbek + how their last conversation went. Deeper lookups still go through
+    tools (recall / search_chat), but the spine of his memory rides in the
+    prompt so he never sounds like a stranger."""
+    base = (
+        f"{_IDENTITY}\n\nYou genuinely remember Avazbek across every conversation. "
+        "Use your tools to go deeper: `recall` for saved facts, `search_chat` for "
+        "his full Telegram history with you, `get_time` for the time. The moment he "
+        "tells you anything worth keeping — a preference, fact, plan, name, or person "
+        "— call `remember` immediately so it's there next time."
+    )
+    profile = _profile()
+    if profile:
+        base = f"{base}\n\nWhat you know about Avazbek:\n{profile}"
+    recent = _recent_conversation()
+    if recent:
+        base = (
+            f"{base}\n\nYour most recent conversation (continue naturally):\n{recent}"
+        )
+    # Voice turns from just before a reconnect — so a dropped session doesn't
+    # wipe what he just said out loud.
+    spoken = voice_history.recent()
+    if spoken:
+        base = (
+            f"{base}\n\nWhat you two were just saying out loud "
+            f"(continue, you remember this):\n{spoken}"
+        )
+    return base
 
 
 # Deepgram client-side function definitions (agent.think.functions[]).
@@ -76,7 +160,10 @@ FUNCTIONS: list[dict] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "note": {"type": "string", "description": "The fact to remember, one concise sentence."}
+                "note": {
+                    "type": "string",
+                    "description": "The fact to remember, one concise sentence.",
+                }
             },
             "required": ["note"],
         },
@@ -86,8 +173,27 @@ FUNCTIONS: list[dict] = [
         "description": "Search saved memory for something Avazbek told you before.",
         "parameters": {
             "type": "object",
-            "properties": {"query": {"type": "string", "description": "What to look up."}},
+            "properties": {
+                "query": {"type": "string", "description": "What to look up."}
+            },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "search_chat",
+        "description": (
+            "Search Avazbek's Telegram DM history with Nemo (both his messages and "
+            "Nemo's replies) to recall what was discussed before. Leave query empty "
+            "to get the most recent messages."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to find; empty for most recent.",
+                }
+            },
         },
     },
     {
@@ -95,7 +201,9 @@ FUNCTIONS: list[dict] = [
         "description": "Send Avazbek a message on Telegram. Only when he explicitly asks you to text/message him.",
         "parameters": {
             "type": "object",
-            "properties": {"text": {"type": "string", "description": "The message to send."}},
+            "properties": {
+                "text": {"type": "string", "description": "The message to send."}
+            },
             "required": ["text"],
         },
     },
@@ -104,16 +212,25 @@ FUNCTIONS: list[dict] = [
         "description": "Get Avazbek's current local date and time.",
         "parameters": {"type": "object", "properties": {}},
     },
+    *phone_tools.FUNCTIONS,
 ]
 
 
-async def dispatch(name: str, args: dict) -> str:
-    """Execute a client-side function; always returns a JSON string for Deepgram."""
+async def dispatch(name: str, args: dict, bridge=None) -> str:
+    """Execute a client-side function; always returns a JSON string for Deepgram.
+
+    ``bridge`` (ActionBridge) connects phone tools to the live app websocket;
+    memory/time tools run locally and ignore it.
+    """
     try:
+        if name in phone_tools.PHONE_TOOL_NAMES:
+            return await phone_tools.dispatch(name, args, bridge)
         if name == "remember":
             return _remember(args.get("note", ""))
         if name == "recall":
             return _recall(args.get("query", ""))
+        if name == "search_chat":
+            return _search_chat(args.get("query", ""))
         if name == "send_telegram":
             return await _send_telegram(args.get("text", ""))
         if name == "get_time":
@@ -145,23 +262,68 @@ def _recall(query: str) -> str:
                 lines = f.read_text().splitlines()
             except OSError:
                 continue
-            hits.extend(ln.strip() for ln in lines if q in ln.lower())
-    return json.dumps({"results": hits[:8]})
+            # Cap each hit like _search_chat does — one runaway line in a
+            # memory file shouldn't bloat the tool result (tokens cost money).
+            hits.extend(ln.strip()[:200] for ln in lines if q in ln.lower())
+    # Also search the verbatim voice journal so Nemo can recall anything ever
+    # said out loud, not just saved facts.
+    hits.extend(voice_history.search(q, limit=6))
+    return json.dumps({"results": hits[:10]})
+
+
+def _search_chat(query: str, limit: int = 6) -> str:
+    """Search the Telegram DM history (read-only). Returns a few recent matches —
+    small + on-demand so it stays cheap, never the whole transcript."""
+    q = (query or "").strip()
+    if not _DB.exists():
+        return json.dumps({"results": []})
+    try:
+        con = sqlite3.connect(f"file:{_DB}?mode=ro", uri=True)
+        cur = con.cursor()
+        if q:
+            rows = cur.execute(
+                "SELECT direction, timestamp, text FROM messages "
+                "WHERE text LIKE ? AND COALESCE(deleted,0)=0 "
+                "ORDER BY timestamp DESC LIMIT ?",
+                (f"%{q}%", limit),
+            ).fetchall()
+        else:
+            rows = cur.execute(
+                "SELECT direction, timestamp, text FROM messages "
+                "WHERE COALESCE(deleted,0)=0 ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        con.close()
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+    results = [
+        {
+            "who": "Avazbek" if d == "in" else "Nemo",
+            "when": ts,
+            "text": (t or "")[:200],
+        }
+        for d, ts, t in rows
+    ]
+    return json.dumps({"results": results})
 
 
 async def _send_telegram(text: str) -> str:
     text = (text or "").strip()
     if not text:
         return json.dumps({"error": "empty message"})
-    if not _TELEGRAM_TOKEN:
+    if not _TELEGRAM_TOKEN or not _CHAT_ID:
         return json.dumps({"error": "telegram not configured"})
     url = f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json={"chat_id": int(_CHAT_ID), "text": text}) as resp:
+        async with session.post(
+            url, json={"chat_id": int(_CHAT_ID), "text": text}
+        ) as resp:
             ok = resp.status == 200
     return json.dumps({"status": "sent" if ok else "failed"})
 
 
 def _get_time() -> str:
     now = datetime.now(timezone.utc) + timedelta(hours=_UTC_OFFSET_HOURS)
-    return json.dumps({"time": now.strftime("%A, %Y-%m-%d %H:%M"), "tz": f"UTC+{_UTC_OFFSET_HOURS}"})
+    return json.dumps(
+        {"time": now.strftime("%A, %Y-%m-%d %H:%M"), "tz": f"UTC+{_UTC_OFFSET_HOURS}"}
+    )

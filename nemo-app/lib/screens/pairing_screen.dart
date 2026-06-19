@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../app_version.dart';
+import '../theme.dart';
+import '../widgets/voice_orb.dart';
 import 'chat_list_screen.dart';
 
 const _storage = FlutterSecureStorage(
@@ -17,7 +19,7 @@ class PairingScreen extends StatefulWidget {
 }
 
 class _PairingScreenState extends State<PairingScreen> {
-  final _urlCtrl = TextEditingController(text: 'ws://165.140.240.169:8765');
+  final _urlCtrl = TextEditingController(text: 'wss://165.140.240.169:8765');
   final _tokenCtrl = TextEditingController();
   bool _saving = false;
   String? _error;
@@ -33,7 +35,10 @@ class _PairingScreenState extends State<PairingScreen> {
       setState(() => _error = 'URL must start with ws:// or wss://');
       return;
     }
-    setState(() { _saving = true; _error = null; });
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
     await _storage.write(key: 'server_url', value: url);
     await _storage.write(key: 'app_token', value: token);
     if (mounted) {
@@ -47,42 +52,37 @@ class _PairingScreenState extends State<PairingScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F1A),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(28, 48, 28, 28),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              const Text('👋', style: TextStyle(fontSize: 48)),
-              const SizedBox(height: 16),
-              const Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text('Pair with Nemo',
-                      style: TextStyle(color: Colors.white, fontSize: 28,
-                          fontWeight: FontWeight.bold)),
-                  SizedBox(width: 8),
-                  Padding(
-                    padding: EdgeInsets.only(bottom: 3),
-                    child: Text(nemoVersionLabel,
-                        style: TextStyle(color: Colors.white38, fontSize: 13,
-                            fontWeight: FontWeight.w600)),
-                  ),
-                ],
+              const VoiceOrb(state: OrbState.idle, size: 150),
+              const SizedBox(height: 36),
+              const Text(
+                'Nemo',
+                style: TextStyle(
+                  color: NemoColors.text,
+                  fontSize: 34,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 4,
+                ),
               ),
               const SizedBox(height: 8),
-              const Text('Enter your server address and the token from .env',
-                  style: TextStyle(color: Colors.white54, fontSize: 14)),
-              const SizedBox(height: 32),
+              Text(
+                'Your private voice assistant  ·  $nemoVersionLabel',
+                style:
+                    const TextStyle(color: NemoColors.textFaint, fontSize: 13),
+              ),
+              const SizedBox(height: 44),
               _field(_urlCtrl, 'Server URL', 'ws://YOUR_SERVER_IP:8765'),
               const SizedBox(height: 16),
               _field(_tokenCtrl, 'App Token', 'NEMO_APP_TOKEN from .env',
                   obscure: true),
               if (_error != null) ...[
-                const SizedBox(height: 8),
-                Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                const SizedBox(height: 14),
+                Text(_error!, style: const TextStyle(color: NemoColors.danger)),
               ],
               const SizedBox(height: 32),
               SizedBox(
@@ -90,7 +90,9 @@ class _PairingScreenState extends State<PairingScreen> {
                 child: FilledButton(
                   onPressed: _saving ? null : _save,
                   child: _saving
-                      ? const SizedBox(width: 20, height: 20,
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
                           child: CircularProgressIndicator(strokeWidth: 2))
                       : const Text('Connect'),
                 ),
@@ -107,13 +109,8 @@ class _PairingScreenState extends State<PairingScreen> {
     return TextField(
       controller: ctrl,
       obscureText: obscure,
-      style: const TextStyle(color: Colors.white),
-      decoration: InputDecoration(
-        labelText: label, hintText: hint,
-        hintStyle: const TextStyle(color: Colors.white24),
-        filled: true, fillColor: const Color(0xFF1E1E2E),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-      ),
+      style: const TextStyle(color: NemoColors.text),
+      decoration: InputDecoration(labelText: label, hintText: hint),
     );
   }
 

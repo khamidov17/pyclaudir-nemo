@@ -13,6 +13,7 @@ import '../services/chat_storage.dart';
 import '../services/nemo_service.dart';
 import '../services/recording_service.dart';
 import '../services/voice_service.dart';
+import '../theme.dart';
 import '../widgets/message_bubble.dart';
 import 'voice_chat_screen.dart';
 
@@ -66,7 +67,9 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _thinking = false);
   }
 
-  void _addMessage(String text, Sender sender, {
+  void _addMessage(
+    String text,
+    Sender sender, {
     MessageType type = MessageType.text,
     String? mediaPath,
     String? mediaName,
@@ -117,7 +120,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendImage() async {
     final picked = await _imagePicker.pickImage(
-      source: ImageSource.gallery, imageQuality: 85);
+        source: ImageSource.gallery, imageQuality: 85);
     if (picked == null) return;
     final bytes = await picked.readAsBytes();
     final b64 = base64Encode(bytes);
@@ -125,37 +128,36 @@ class _ChatScreenState extends State<ChatScreen> {
     final dir = await getApplicationDocumentsDirectory();
     final dest = '${dir.path}/${_uuid.v4()}.jpg';
     await File(dest).writeAsBytes(bytes);
-    _addMessage('', Sender.user,
-        type: MessageType.image, mediaPath: dest);
+    _addMessage('', Sender.user, type: MessageType.image, mediaPath: dest);
 
     // Ask Nemo about the image
     setState(() => _thinking = true);
     final sent = await context.read<NemoService>().sendWithMedia(
-      '[Image attached — please describe and analyze it]', b64, 'image/jpeg');
+        '[Image attached — please describe and analyze it]', b64, 'image/jpeg');
     if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _takePhoto() async {
     final picked = await _imagePicker.pickImage(
-      source: ImageSource.camera, imageQuality: 85);
+        source: ImageSource.camera, imageQuality: 85);
     if (picked == null) return;
     final bytes = await picked.readAsBytes();
     final b64 = base64Encode(bytes);
     final dir = await getApplicationDocumentsDirectory();
     final dest = '${dir.path}/${_uuid.v4()}.jpg';
     await File(dest).writeAsBytes(bytes);
-    _addMessage('', Sender.user,
-        type: MessageType.image, mediaPath: dest);
+    _addMessage('', Sender.user, type: MessageType.image, mediaPath: dest);
     setState(() => _thinking = true);
-    final sent = await context.read<NemoService>().sendWithMedia(
-      '[Photo taken — please describe it]', b64, 'image/jpeg');
+    final sent = await context
+        .read<NemoService>()
+        .sendWithMedia('[Photo taken — please describe it]', b64, 'image/jpeg');
     if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _sendFile() async {
     // PDF/file sending coming in next update
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('PDF sending coming soon')));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('PDF sending coming soon')));
   }
 
   Future<void> _toggleRecording() async {
@@ -163,15 +165,16 @@ class _ChatScreenState extends State<ChatScreen> {
       final result = await _rec.stopAndTranscribe();
       if (result == null) return;
       final dur = result.duration.inSeconds;
-      final transcript = result.transcript ?? '[No transcript — add Groq API key]';
-      final summary = 'Recorded ${dur}s conversation.\n\nTranscript:\n$transcript';
-      _addMessage(summary, Sender.user,
-          type: MessageType.recording);
+      final transcript =
+          result.transcript ?? '[No transcript — add Groq API key]';
+      final summary =
+          'Recorded ${dur}s conversation.\n\nTranscript:\n$transcript';
+      _addMessage(summary, Sender.user, type: MessageType.recording);
       // Save to Nemo memory automatically
       setState(() => _thinking = true);
       final sent = await context.read<NemoService>().send(
-        'I just recorded a ${dur}s conversation. Please save this to memory '
-        'and summarize what was discussed:\n\n$transcript');
+          'I just recorded a ${dur}s conversation. Please save this to memory '
+          'and summarize what was discussed:\n\n$transcript');
       if (!sent && mounted) setState(() => _thinking = false);
     } else {
       await _rec.startRecording();
@@ -182,9 +185,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showAttachMenu() {
     showModalBottomSheet(
       context: context,
-      backgroundColor: const Color(0xFF1E1E2E),
+      backgroundColor: NemoColors.surface,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
       builder: (_) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           _menuItem(Icons.photo_library, 'Photo from gallery', _sendImage),
@@ -193,7 +196,10 @@ class _ChatScreenState extends State<ChatScreen> {
           _menuItem(
             _rec.isRecording ? Icons.stop_circle : Icons.mic,
             _rec.isRecording ? 'Stop recording' : 'Record conversation',
-            () { Navigator.pop(context); _toggleRecording(); },
+            () {
+              Navigator.pop(context);
+              _toggleRecording();
+            },
             color: _rec.isRecording ? Colors.red : null,
           ),
         ]),
@@ -204,9 +210,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _menuItem(IconData icon, String label, VoidCallback onTap,
       {Color? color}) {
     return ListTile(
-      leading: Icon(icon, color: color ?? const Color(0xFF7C3AED)),
-      title: Text(label, style: TextStyle(color: color ?? Colors.white)),
-      onTap: () { Navigator.pop(context); onTap(); },
+      leading: Icon(icon, color: color ?? NemoColors.accent),
+      title: Text(label, style: TextStyle(color: color ?? NemoColors.text)),
+      onTap: () {
+        Navigator.pop(context);
+        onTap();
+      },
     );
   }
 
@@ -215,41 +224,45 @@ class _ChatScreenState extends State<ChatScreen> {
     final nemo = context.watch<NemoService>();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F1A),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F1A),
-        elevation: 0,
         title: Row(children: [
           Container(
-            width: 8, height: 8,
+            width: 8,
+            height: 8,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: nemo.isConnected ? Colors.greenAccent : Colors.redAccent,
+              color: nemo.isConnected ? NemoColors.accent : NemoColors.danger,
             ),
           ),
           const SizedBox(width: 8),
           const Text('Nemo $nemoVersionLabel',
-              style: TextStyle(fontWeight: FontWeight.bold)),
+              style: TextStyle(fontWeight: FontWeight.w600)),
           if (_thinking) ...[
             const SizedBox(width: 8),
-            const SizedBox(width: 12, height: 12,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white38)),
+            const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: NemoColors.textDim)),
           ],
           if (_rec.isRecording) ...[
             const SizedBox(width: 8),
-            const Icon(Icons.fiber_manual_record, color: Colors.red, size: 10),
+            const Icon(Icons.fiber_manual_record,
+                color: NemoColors.danger, size: 10),
             const SizedBox(width: 4),
             Text('${_rec.elapsedSeconds}s',
-                style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+                style: const TextStyle(color: NemoColors.danger, fontSize: 12)),
           ],
         ]),
         actions: [
           IconButton(
-            icon: const Icon(Icons.record_voice_over),
+            icon: const Icon(Icons.graphic_eq, color: NemoColors.accent),
+            tooltip: 'Talk to Nemo',
             onPressed: () {
-              final host = _extractHost(nemo.serverUrl);
-              Navigator.push(context, MaterialPageRoute(
-                builder: (_) => VoiceChatScreen(serverHost: host, autoStart: true)));
+              Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => const VoiceChatScreen(autoStart: true)));
             },
           ),
         ],
@@ -257,14 +270,18 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(children: [
         Expanded(
           child: _messages.isEmpty
-              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  const Text('💬', style: TextStyle(fontSize: 40)),
-                  const SizedBox(height: 12),
-                  const Text('Say anything', style: TextStyle(
-                      color: Colors.white38, fontSize: 15)),
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Icon(Icons.forum_outlined,
+                      color: NemoColors.textFaint, size: 40),
+                  const SizedBox(height: 16),
+                  const Text('Say anything',
+                      style:
+                          TextStyle(color: NemoColors.textDim, fontSize: 16)),
                   const SizedBox(height: 6),
-                  const Text('Send text, photos, PDFs or tap 🎙',
-                      style: TextStyle(color: Colors.white24, fontSize: 13)),
+                  const Text('Text, photos, PDFs — or tap the wave to talk',
+                      style:
+                          TextStyle(color: NemoColors.textFaint, fontSize: 13)),
                 ]))
               : ListView.builder(
                   controller: _scroll,
@@ -278,20 +295,24 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
             child: Row(children: [
               IconButton(
-                icon: const Icon(Icons.add_circle_outline, color: Color(0xFF7C3AED)),
+                icon: const Icon(Icons.add_circle_outline,
+                    color: NemoColors.accent),
                 onPressed: _showAttachMenu,
               ),
               Expanded(
                 child: TextField(
                   controller: _ctrl,
-                  style: const TextStyle(color: Colors.white),
+                  style: const TextStyle(color: NemoColors.text),
                   maxLines: null,
                   decoration: InputDecoration(
                     hintText: 'Message Nemo…',
-                    hintStyle: const TextStyle(color: Colors.white38),
                     filled: true,
-                    fillColor: const Color(0xFF1E1E2E),
+                    fillColor: NemoColors.surface,
                     border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(24),
                       borderSide: BorderSide.none,
                     ),
@@ -303,7 +324,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               IconButton(
                 icon: const Icon(Icons.send_rounded),
-                color: const Color(0xFF7C3AED),
+                color: NemoColors.accent,
                 onPressed: _send,
               ),
             ]),
@@ -311,12 +332,6 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
       ]),
     );
-  }
-
-  String _extractHost(String url) {
-    try { return Uri.parse(url).host; } catch (_) {
-      return url.replaceAll(RegExp(r'^wss?://'), '').split(':').first;
-    }
   }
 
   @override

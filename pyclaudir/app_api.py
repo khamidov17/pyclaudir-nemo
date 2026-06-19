@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -61,15 +62,25 @@ class AppApiServer:
 
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Nemo App API", docs_url=None, redoc_url=None)
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # The native app sends no Origin header and needs no CORS. A browser is
+        # not a supported client, so don't hand one a wildcard grant to a
+        # phone-control API — restrict to explicit origins if ever needed.
+        _origins = [
+            o.strip()
+            for o in os.environ.get("NEMO_CORS_ORIGINS", "").split(",")
+            if o.strip()
+        ]
+        if _origins:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=_origins,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
 
         def _check_token(request_token: str) -> bool:
             import hmac
+
             return hmac.compare_digest(request_token, self._token)
 
         def _auth(request: Request, token: str = "") -> bool:
@@ -84,15 +95,21 @@ class AppApiServer:
             """Authenticated version check."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             try:
-                v = int((self._data_dir / "apk" / "version.txt").read_text().strip()) if self._data_dir else 0
+                v = (
+                    int((self._data_dir / "apk" / "version.txt").read_text().strip())
+                    if self._data_dir
+                    else 0
+                )
             except Exception:
                 v = 0
             # Include APK hash so client can verify before installing
             apk_hash = ""
             if self._data_dir:
                 import hashlib
+
                 apk_path = self._data_dir / "apk" / "nemo-latest.apk"
                 if apk_path.exists():
                     apk_hash = hashlib.sha256(apk_path.read_bytes()).hexdigest()
@@ -103,13 +120,16 @@ class AppApiServer:
             """Authenticated APK download."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             if self._data_dir is None:
                 from fastapi import HTTPException
+
                 raise HTTPException(404, "APK not available")
             apk_path = self._data_dir / "apk" / "nemo-latest.apk"
             if not apk_path.exists():
                 from fastapi import HTTPException
+
                 raise HTTPException(404, "APK not found — run scripts/build_apk.sh")
             return FileResponse(
                 str(apk_path),
@@ -122,6 +142,7 @@ class AppApiServer:
             """Status — requires auth."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             return {
                 "status": "ok",
@@ -130,9 +151,7 @@ class AppApiServer:
             }
 
         @app.websocket("/ws")
-        async def ws_endpoint(
-            websocket: WebSocket, device_id: str = ""
-        ) -> None:
+        async def ws_endpoint(websocket: WebSocket, device_id: str = "") -> None:
             # Accept first, then authenticate via first message (token not in URL)
             await websocket.accept()
             try:
@@ -148,7 +167,9 @@ class AppApiServer:
 
             self._ctx.app_clients.add(websocket)
             did = device_id
-            log.info("app connected device=%s (%d total)", did, len(self._ctx.app_clients))
+            log.info(
+                "app connected device=%s (%d total)", did, len(self._ctx.app_clients)
+            )
 
             await websocket.send_text(
                 f'{{"type":"connected","status":"ok","device_id":"{did}"}}'
@@ -171,8 +192,11 @@ class AppApiServer:
             finally:
                 self._ctx.app_clients.discard(websocket)
                 await self._broker.unregister_device(did)
-                log.info("app disconnected device=%s (%d remaining)", did,
-                         len(self._ctx.app_clients))
+                log.info(
+                    "app disconnected device=%s (%d remaining)",
+                    did,
+                    len(self._ctx.app_clients),
+                )
 
         return app
 
@@ -189,16 +213,19 @@ class AppApiServer:
             if media and isinstance(media, dict):
                 import base64 as _b64
                 import uuid as _uuid
+
                 raw = _b64.b64decode(media.get("data", ""))
                 mime = media.get("mime", "application/octet-stream")
                 ext = "jpg" if "image" in mime else "pdf" if "pdf" in mime else "bin"
                 fname = f"app_media_{_uuid.uuid4().hex[:8]}.{ext}"
-                att_dir = self._data_dir / "attachments" / "app" if self._data_dir else None
+                att_dir = (
+                    self._data_dir / "attachments" / "app" if self._data_dir else None
+                )
                 if att_dir:
                     att_dir.mkdir(parents=True, exist_ok=True)
                     att_path = att_dir / fname
                     att_path.write_bytes(raw)
-                    text = f"{text}\n[attachment: {att_path} type={mime} size={len(raw)//1024}KB filename={fname}]"
+                    text = f"{text}\n[attachment: {att_path} type={mime} size={len(raw) // 1024}KB filename={fname}]"
 
             if not text:
                 return
@@ -223,13 +250,20 @@ class AppApiServer:
             if action_id:
                 # Strip image data from logs — never audit-log base64
                 safe = {k: v for k, v in data.items() if k != "image_b64"}
-                log.debug("action_result device=%s id=%s ok=%s %s",
-                          device_id, action_id, data.get("ok"), safe)
+                log.debug(
+                    "action_result device=%s id=%s ok=%s %s",
+                    device_id,
+                    action_id,
+                    data.get("ok"),
+                    safe,
+                )
                 self._broker.deliver_result(action_id, data)
 
         elif msg_type == "panic":
             # Emergency stop — kill phone control session immediately
-            log.warning("PANIC received from device=%s — stopping phone control", device_id)
+            log.warning(
+                "PANIC received from device=%s — stopping phone control", device_id
+            )
             await self._broker.unregister_device(device_id)
             await websocket.send_text('{"type":"panic_ack","status":"stopped"}')
             return  # Close connection
@@ -243,16 +277,25 @@ class AppApiServer:
             log.debug("unknown message type=%s from device=%s", msg_type, device_id)
 
     async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
+        import os
+
+        # TLS: set NEMO_TLS_CERT/NEMO_TLS_KEY (scripts/gen_server_cert.sh) and
+        # the app connects with wss:// + cert pinning instead of cleartext.
+        cert = os.environ.get("NEMO_TLS_CERT", "").strip() or None
+        key = os.environ.get("NEMO_TLS_KEY", "").strip() or None
         config = uvicorn.Config(
             self.app,
             host=host,
             port=port,
             log_level="warning",
             access_log=False,
+            ssl_certfile=cert,
+            ssl_keyfile=key,
         )
         self._server = uvicorn.Server(config)
         asyncio.create_task(self._server.serve(), name="nemo-app-api")
-        log.info("app api ws://%s:%d/ws (phone_broker attached)", host, port)
+        scheme = "wss" if cert else "ws"
+        log.info("app api %s://%s:%d/ws (phone_broker attached)", scheme, host, port)
 
     async def stop(self) -> None:
         if self._server:

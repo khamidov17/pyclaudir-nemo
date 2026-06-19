@@ -176,16 +176,37 @@ def build_allowed_tools(text: str, base: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(combined))
 
 
+# Tools that can control the phone or read the message/SQL store. Keyword
+# detection alone must never expose these to a non-owner: even if the access
+# policy is loosened to allowlist/open, only the owner's own messages may
+# summon them, so a crafted group message can't prompt-inject phone control.
+OWNER_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "mcp__pyclaudir__phone_action",
+        "mcp__pyclaudir__query_db",
+    }
+)
+
+
 def build_turn_tools(
     text: str,
     *,
     intent: str = "FULL_NEMO",
     external_tools: tuple[str, ...] = (),
     base: tuple[str, ...] = CORE_ALLOWED_TOOLS,
+    is_owner: bool = True,
 ) -> tuple[str, ...]:
-    """Return the minimal allowed tool set for one routed turn."""
+    """Return the minimal allowed tool set for one routed turn.
+
+    ``is_owner`` gates phone/SQL tools: non-owner senders never get them,
+    independent of the access policy (defense-in-depth against prompt
+    injection from group messages).
+    """
     extras = set(INTENT_TOOLS.get(intent, ()))
     extras.update(detect_extra_tools(text))
     if intent == "CODEX":
         extras.update(t for t in external_tools if t.startswith("mcp__codex"))
-    return tuple(sorted(frozenset(base) | extras))
+    combined = frozenset(base) | extras
+    if not is_owner:
+        combined -= OWNER_ONLY_TOOLS
+    return tuple(sorted(combined))

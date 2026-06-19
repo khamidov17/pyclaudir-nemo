@@ -4,7 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.Build
+import android.util.Log
 import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -31,6 +31,9 @@ class VoicePlayer(private val context: Context) {
     private val queuedBytes = AtomicInteger(0)
     private var sampleRate = 24000
 
+    /** Reported when playback starves (choppy voice). Set by MainActivity. */
+    var onUnderrun: ((Int) -> Unit)? = null
+
     // ~1.5s ceiling. Big enough to ride out real jitter without choppiness;
     // only a severe stall ever trims it (oldest first) so latency can't run away.
     private val maxQueuedBytes get() = sampleRate * 2 * 3 / 2
@@ -41,10 +44,19 @@ class VoicePlayer(private val context: Context) {
         val min = AudioTrack.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
-        val bufBytes = maxOf(min, sampleRate * 2 / 5) // >= 200ms hardware buffer
+        // ~800ms hardware buffer (NOT low-latency): streamed-over-network audio
+        // (esp. on mobile 4G) arrives in bursts, and a small buffer underruns on
+        // every hiccup = choppy speech. A bigger buffer rides out the jitter.
+        // NOTE: this latency is matched by the +1100ms mic-mute tail in the
+        // screen so Nemo's buffered tail can't echo into a false barge-in.
+        val bufBytes = maxOf(min, sampleRate * 2 * 4 / 5)
 
+        // USAGE_ASSISTANT: same full-bandwidth loudspeaker route as MEDIA, but
+        // identifies this stream as the assistant's voice so the system mixes
+        // it correctly over ducked music (the session-level transient focus in
+        // voice_chat_service is what makes other apps duck and resume).
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setUsage(AudioAttributes.USAGE_ASSISTANT)
             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .build()
         val format = AudioFormat.Builder()
@@ -52,15 +64,12 @@ class VoicePlayer(private val context: Context) {
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
             .build()
-        val builder = AudioTrack.Builder()
+        val t = AudioTrack.Builder()
             .setAudioAttributes(attrs)
             .setAudioFormat(format)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(bufBytes)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-        }
-        val t = builder.build()
+            .build()
         t.play()
         track = t
 
@@ -69,6 +78,7 @@ class VoicePlayer(private val context: Context) {
     }
 
     private fun drain() {
+        var lastUnderrun = 0
         while (running) {
             val chunk = try {
                 queue.pollFirst(200, TimeUnit.MILLISECONDS)
@@ -79,6 +89,14 @@ class VoicePlayer(private val context: Context) {
             val t = track ?: continue
             try {
                 t.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                // Underruns = the speaker starved (choppy voice). Log when it
+                // climbs so logcat shows whether the buffer needs to be bigger.
+                val u = t.underrunCount
+                if (u > lastUnderrun) {
+                    Log.w("NemoVoicePlayer", "playback underruns: $u (queued=${queuedBytes.get()}B)")
+                    lastUnderrun = u
+                    onUnderrun?.invoke(u)
+                }
             } catch (e: Exception) {
                 // track torn down mid-write; loop exits on running=false
             }

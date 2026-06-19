@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
+import 'secure_net.dart';
 
 enum NemoState { disconnected, connecting, connected, thinking }
 
@@ -63,9 +65,13 @@ class NemoService extends ChangeNotifier {
     _setState(NemoState.connecting);
 
     try {
-      // Token sent in first message, not URL — avoids proxy/log leakage
+      // Token sent in first message, not URL — avoids proxy/log leakage.
+      // wss:// uses the pinned self-signed server cert (SecureNet).
       final uri = _wsUri();
-      _channel = WebSocketChannel.connect(uri);
+      _channel = IOWebSocketChannel.connect(
+        uri,
+        customClient: await SecureNet.httpClient(),
+      );
       await _channel!.ready;
       // Stay "connecting" until the server's auth-gated "connected" frame
       // arrives. Showing connected here (before token validation) made a
@@ -181,10 +187,16 @@ class NemoService extends ChangeNotifier {
   Uri _wsUri() {
     final base = Uri.parse(_serverUrl.trim());
     final path = base.path.endsWith('/ws') ? base.path : '${base.path}/ws';
-    return base.replace(path: path, queryParameters: {
-      ...base.queryParameters,
-      'device_id': _deviceId,
-    });
+    return base.replace(
+      // Force TLS: never connect in cleartext, even if an old stored URL says
+      // ws://. The server is wss-only; SecureNet pins the cert.
+      scheme: 'wss',
+      path: path,
+      queryParameters: {
+        ...base.queryParameters,
+        'device_id': _deviceId,
+      },
+    );
   }
 
   void _handleDisconnect(String? reason) {

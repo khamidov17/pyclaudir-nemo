@@ -14,10 +14,12 @@ data/
 
 # Env
 .env
-.env.local
+.env.*
+!.env.example
 *.keystore
 *.jks
 key.properties
+*.bak
 
 # Project-specific prompt (not shipped with open-source pyclaudir)
 prompts/project.md

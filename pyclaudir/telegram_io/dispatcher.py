@@ -491,6 +491,7 @@ class TelegramDispatcher:
                     cm.text,
                     intent=decision.intent,
                     external_tools=self.external_mcp_tools,
+                    is_owner=cm.user_id == self.config.owner_id,
                 ),
             }
 

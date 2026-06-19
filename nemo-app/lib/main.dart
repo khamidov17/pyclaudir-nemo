@@ -5,16 +5,23 @@ import 'package:provider/provider.dart';
 
 import 'screens/chat_list_screen.dart';
 import 'screens/pairing_screen.dart';
+import 'theme.dart';
 import 'services/background_service.dart';
 import 'services/nemo_service.dart';
 import 'services/phone_action_service.dart';
+import 'services/phone_command_executor.dart';
 import 'services/update_service.dart';
 import 'services/voice_service.dart';
+import 'services/voice_session_controller.dart';
 import 'services/wake_word_service.dart';
 
 const _storage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
 );
+
+/// Global navigator: lets background services (voice actions, biometric
+/// prompts) reach a UI context when the app happens to be visible.
+final navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,8 +39,23 @@ Future<void> main() async {
   final wake = WakeWordService();
   await wake.init();
 
-  final phoneActions = PhoneActionService(nemo);
+  final executor = PhoneCommandExecutor();
+  final phoneActions = PhoneActionService(
+    nemo,
+    executor,
+    () => navigatorKey.currentContext,
+  );
   phoneActions.start();
+
+  // The voice session lives at app level: "hey nemo" starts a hands-free
+  // conversation from ANY app, with no UI navigation — Nemo simply talks.
+  final voiceSession = VoiceSessionController(
+    wake: wake,
+    serverUrl: () => nemo.serverUrl,
+    executor: executor,
+    navigatorKey: navigatorKey,
+  );
+  wake.onWakeWord = () => voiceSession.start();
 
   // Start background foreground service so wake word works with screen off.
   // Off by default — only when the user has opted in via Settings.
@@ -56,6 +78,7 @@ Future<void> main() async {
           ChangeNotifierProvider(create: (_) => VoiceService()),
           ChangeNotifierProvider.value(value: wake),
           ChangeNotifierProvider.value(value: updater),
+          ChangeNotifierProvider.value(value: voiceSession),
         ],
         child: NemoApp(isPaired: isPaired),
       ),
@@ -72,13 +95,8 @@ class NemoApp extends StatelessWidget {
     return MaterialApp(
       title: 'Nemo',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF7C3AED),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      navigatorKey: navigatorKey,
+      theme: buildNemoTheme(),
       home: isPaired ? const ChatListScreen() : const PairingScreen(),
     );
   }

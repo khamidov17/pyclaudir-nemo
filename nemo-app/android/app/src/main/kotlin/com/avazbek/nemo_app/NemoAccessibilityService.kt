@@ -62,6 +62,66 @@ class NemoAccessibilityService : AccessibilityService() {
             }
         }
 
+        /** Click the first node whose text/content-description matches (for
+         *  driving app UIs by name, e.g. Telegram's "Send" button). */
+        fun clickByText(query: String): Boolean {
+            val svc = instance ?: return false
+            val root = svc.rootInActiveWindow ?: return false
+            val target = findByText(root, query.lowercase()) ?: return false
+            var node: AccessibilityNodeInfo? = target
+            while (node != null && !node.isClickable) node = node.parent
+            if (node != null &&
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            ) return true
+            val b = Rect().also { target.getBoundsInScreen(it) }
+            if (b.isEmpty) return false
+            return tap(b.exactCenterX(), b.exactCenterY())
+        }
+
+        private fun findByText(node: AccessibilityNodeInfo?, q: String): AccessibilityNodeInfo? {
+            node ?: return null
+            val text = node.text?.toString()?.lowercase() ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+            if (text == q || desc == q) return node
+            for (i in 0 until node.childCount) {
+                findByText(node.getChild(i), q)?.let { return it }
+            }
+            if (text.contains(q) || desc.contains(q)) return node
+            return null
+        }
+
+        /** Tap the first clickable row inside the first scrollable list — used
+         *  to open the top hit of an app's own search results (Telegram, etc). */
+        fun clickFirstResult(): Boolean {
+            val svc = instance ?: return false
+            val root = svc.rootInActiveWindow ?: return false
+            val list = findScrollable(root) ?: root
+            val row = findFirstClickable(list) ?: return false
+            if (row.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            val b = Rect().also { row.getBoundsInScreen(it) }
+            if (b.isEmpty) return false
+            return tap(b.exactCenterX(), b.exactCenterY())
+        }
+
+        private fun findScrollable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            node ?: return null
+            if (node.isScrollable) return node
+            for (i in 0 until node.childCount) {
+                findScrollable(node.getChild(i))?.let { return it }
+            }
+            return null
+        }
+
+        private fun findFirstClickable(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            node ?: return null
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i)
+                if (child != null && child.isClickable) return child
+                findFirstClickable(child)?.let { return it }
+            }
+            return null
+        }
+
         fun getUiTree(): String {
             val svc = instance ?: return "accessibility_disabled"
             val root = svc.rootInActiveWindow ?: return "no_window"

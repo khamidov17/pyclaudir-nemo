@@ -1,88 +1,65 @@
-# Real-Time Voice Assistant with Google ADK
+# Nemo Voice
 
-This project implements a real-time, multimodal voice assistant using the Google Assistant "Diamond" Kit (ADK). It features a Python-based server that handles audio and video streaming, and a web-based client for user interaction.
+Real-time voice for Nemo. The Android app streams your microphone to this
+server, which talks to Deepgram's Voice Agent (or Gemini Live) and streams
+Nemo's spoken reply back. Say "hey nemo" anywhere — even inside another app —
+and just talk.
 
-## Features
+## What it can do
 
-- **Real-Time Audio Streaming**: Captures microphone input and streams it to the server for processing.
-- **Multimodal Capabilities**: Supports both audio and video data streams.
-- **Google ADK Integration**: Leverages the Google ADK for conversational AI, including speech-to-text and text-to-speech.
-- **Function Calling**: Integrated with Google Maps for location-based queries.
-- **Web-Based Client**: Simple HTML and JavaScript client for interacting with the assistant.
+- Natural back-and-forth conversation with barge-in (interrupt him mid-sentence).
+- Shares the same memory as the text/Telegram Nemo (`remember` / `recall`).
+- Controls your phone by voice:
+  - **open_app** — "open Spotify" (any installed app, by name)
+  - **set_alarm / set_timer** — "set an alarm for 2am" (uses your clock app)
+  - **message_contact** — "message Aziz on Telegram: do you have time today"
+    (finds the contact in your phone, sends through your own Telegram)
+  - **phone_command** — advanced screen control (read screen, tap, type)
+- Voice: Deepgram Aura-2 "Draco" (deep British male — Jarvis style).
+  Change with `DEEPGRAM_SPEAK_MODEL` in `.env`.
 
-## Project Structure
-
-```
-.
-├── client/
-│   ├── interface.html       # The main HTML file for the client UI
-│   ├── sound_handler.js     # Manages audio playback
-│   └── stream_manager.js    # Handles WebSocket connection and data streaming
-├── server/
-│   ├── streaming_service.py # Main Python server using WebSockets and Google ADK
-│   ├── core_utils.py        # Core utilities and configurations
-│   ├── requirements.txt     # Python dependencies
-│   └── start_servers.sh     # Script to start the server
-└── README.md                # This file
-```
-
-## Setup and Installation
-
-### Prerequisites
-
-- Python 3.8+
-- `pip` for package management
-- An active Google Cloud project with the required APIs enabled.
-
-### 1. Set Up Environment Variables
-
-Create a `.env` file in the `server/` directory and add your Google Maps API key:
+## Parts
 
 ```
-GOOGLE_MAPS_API_KEY="YOUR_API_KEY_HERE"
+server/
+├── streaming_service.py  # WebSocket bridge: app ↔ Deepgram (port 3002)
+├── gemini_streaming.py   # Alternative backend: Gemini Live (VOICE_BACKEND=gemini)
+├── voice_brain.py        # Nemo's identity, shared memory, tools
+├── phone_tools.py        # Phone-control tool definitions
+└── action_bridge.py      # Sends phone commands to the app, waits for results
+client/                   # Browser test client (port 3001)
 ```
 
-### 2. Install Dependencies
+## Setup
 
-It is recommended to use a virtual environment to manage the project's dependencies.
+In the repo root `.env`:
+
+```
+NEMO_APP_TOKEN=...        # same token the app uses
+DEEPGRAM_API_KEY=...      # or GEMINI_API_KEY with VOICE_BACKEND=gemini
+```
+
+Optional TLS (recommended — see `scripts/gen_server_cert.sh` in the repo root):
+
+```
+VOICE_TLS_CERT=/path/nemo-server.crt
+VOICE_TLS_KEY=/path/nemo-server.key
+```
+
+Then:
 
 ```bash
-# Navigate to the server directory
 cd server
-
-# Create a virtual environment
-python3 -m venv .venv
-
-# Activate the virtual environment
-# On macOS and Linux:
-source .venv/bin/activate
-# On Windows:
-# .\.venv\Scripts\activate
-
-# Install the required Python packages
 pip install -r requirements.txt
+python streaming_service.py
 ```
 
-## Running the Application
+The app connects to port 3002 automatically using the Server URL from its
+settings (use `wss://` once TLS is on).
 
-1.  **Start the Server**:
-    Open a terminal, navigate to the `server/` directory, and run the start script:
+## Cost notes
 
-    ```bash
-    cd server
-    ./start_servers.sh
-    ```
-
-    The server will start on `http://localhost:8080`.
-
-2.  **Open the Client**:
-    Open the [`client/interface.html`](client/interface.html) file in your web browser. The client will automatically connect to the WebSocket server.
-
-3.  **Interact with the Assistant**:
-    - Click the "Start Streaming" button to begin capturing audio.
-    - The assistant will respond with both text and audio.
-
-## Configuration
-
-- **Server Port**: The WebSocket server port can be configured in [`server/streaming_service.py`](server/streaming_service.py). The default is `8080`.
-- **Google ADK Model**: The model and voice settings can be adjusted in [`server/core_utils.py`](server/core_utils.py).
+The session prompt is small and sent once per session, memory is fetched
+on demand through tools, and Nemo is instructed to answer in 1-2 sentences —
+long replies are billed twice (LLM tokens + TTS characters). The wake word
+runs fully on-device (Vosk), costing nothing.
