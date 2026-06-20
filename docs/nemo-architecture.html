@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How Nemo Works</title>
+<style>
+  :root{
+    --blue1:#2563eb; --blue2:#38bdf8; --ink:#0f172a; --muted:#64748b;
+    --bg:#f1f5f9; --card:#ffffff; --line:#cbd5e1; --soft:#eff6ff;
+    --green:#10b981; --amber:#f59e0b; --violet:#7c3aed;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 20px 80px}
+  header{background:linear-gradient(135deg,var(--blue1),var(--blue2));color:#fff;padding:54px 20px 46px;text-align:center;
+         border-radius:0 0 28px 28px;box-shadow:0 10px 30px rgba(37,99,235,.25)}
+  header h1{margin:0;font-size:2.4rem;letter-spacing:-.5px}
+  header p{margin:12px auto 0;max-width:620px;opacity:.95;font-size:1.05rem}
+  h2{font-size:1.5rem;margin:54px 0 6px;display:flex;align-items:center;gap:10px}
+  h2 .n{background:var(--ink);color:#fff;width:30px;height:30px;border-radius:8px;display:inline-flex;
+        align-items:center;justify-content:center;font-size:.95rem;flex:0 0 auto}
+  .sub{color:var(--muted);margin:0 0 18px;font-size:1.02rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px 20px;
+        box-shadow:0 2px 10px rgba(15,23,42,.04)}
+  .tier{border-radius:16px;padding:16px 18px;margin:10px 0;border:1px solid var(--line);background:var(--card)}
+  .tier h3{margin:0 0 4px;font-size:1.15rem;display:flex;align-items:center;gap:8px}
+  .tier .role{color:var(--muted);font-size:.92rem;margin:0 0 10px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{background:var(--soft);border:1px solid #dbeafe;color:#1e40af;border-radius:999px;
+        padding:5px 12px;font-size:.86rem;font-weight:500}
+  .arrow{text-align:center;color:var(--muted);font-size:1.3rem;margin:2px 0;line-height:1}
+  .arrow small{display:block;font-size:.78rem;color:var(--muted)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .phone{border-left:5px solid var(--blue2)}
+  .voice{border-left:5px solid var(--violet)}
+  .engine{border-left:5px solid var(--blue1)}
+  .mem{border-left:5px solid var(--green);background:#f0fdf4}
+  .cloud{border-left:5px solid var(--amber);background:#fffbeb}
+  .flow{display:flex;flex-direction:column;gap:0}
+  .step{display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-bottom:1px dashed var(--line)}
+  .step:last-child{border-bottom:0}
+  .step .b{flex:0 0 auto;width:30px;height:30px;border-radius:50%;background:var(--blue1);color:#fff;
+           display:flex;align-items:center;justify-content:center;font-weight:600;font-size:.9rem}
+  .step .t{flex:1}
+  .step .t b{color:var(--ink)}
+  .step .t span{color:var(--muted)}
+  .layers{display:flex;flex-direction:column;gap:8px}
+  .layer{display:flex;gap:12px;align-items:center;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card)}
+  .layer .ic{font-size:1.4rem}
+  .layer b{display:block}
+  .layer span{color:var(--muted);font-size:.9rem}
+  .proactive{display:grid;grid-template-columns:1fr;gap:10px}
+  .trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .mini{background:var(--soft);border:1px solid #dbeafe;border-radius:12px;padding:12px;text-align:center;font-size:.9rem}
+  .mini b{display:block;font-size:1.4rem;margin-bottom:4px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .cap{display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--line);
+       border-radius:12px;padding:14px}
+  .cap .e{font-size:1.5rem;flex:0 0 auto}
+  .cap b{display:block}
+  .cap span{color:var(--muted);font-size:.9rem}
+  .sec{list-style:none;padding:0;margin:0;display:grid;gap:10px}
+  .sec li{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;
+          display:flex;gap:10px;align-items:flex-start}
+  .sec .e{font-size:1.2rem}
+  pre{background:#0f172a;color:#e2e8f0;border-radius:14px;padding:18px;overflow:auto;font-size:.84rem;line-height:1.55}
+  pre b{color:#7dd3fc}
+  .note{background:linear-gradient(135deg,#eff6ff,#f0f9ff);border:1px solid #bfdbfe;border-radius:16px;
+        padding:18px 20px;margin-top:40px;font-size:1.02rem}
+  @media(max-width:680px){.cols,.grid,.trio{grid-template-columns:1fr}header h1{font-size:1.9rem}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐟 How Nemo Works</h1>
+  <p>A private, proactive voice assistant that lives on your phone — remembers everything,
+     acts on the phone, and reaches out <em>first</em> instead of only answering.</p>
+</header>
+
+<div class="wrap">
+
+  <h2><span class="n">1</span> The big picture</h2>
+  <p class="sub">Nemo is three cooperating pieces + one shared memory. The phone is what you talk to;
+     the brain reasons and schedules; the voice layer makes it fast and natural.</p>
+
+  <div class="tier phone">
+    <h3>📱 Phone app <span style="color:var(--muted);font-weight:400;font-size:.85rem">(Flutter)</span></h3>
+    <p class="role">What you see and talk to. Hears the wake word, runs the live call, drives the phone, plays Nemo's voice.</p>
+    <div class="chips">
+      <span class="chip">Wake word "hey nemo" (on-device)</span>
+      <span class="chip">Voice session (mic ↔ speaker)</span>
+      <span class="chip">Phone control</span>
+      <span class="chip">Chat + voice UI</span>
+    </div>
+  </div>
+
+  <div class="arrow">↑↓ <small>voice over wss · chat over wss · "speak this" pushes</small></div>
+
+  <div class="cols">
+    <div class="tier voice">
+      <h3>🗣️ nemo-voice</h3>
+      <p class="role">The realtime voice layer (port 3002).</p>
+      <div class="chips">
+        <span class="chip">Qwen Omni Realtime (speech→speech)</span>
+        <span class="chip">voice_brain (identity + tools)</span>
+      </div>
+    </div>
+    <div class="tier engine">
+      <h3>🧠 pyclaudir engine</h3>
+      <p class="role">The brain + proactive scheduler (port 8765).</p>
+      <div class="chips">
+        <span class="chip">Claude Code (reasoning)</span>
+        <span class="chip">Reminder loop + webhooks</span>
+        <span class="chip">app_api (link to phone)</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">↓ <small>both read &amp; write the same memory</small></div>
+
+  <div class="tier mem">
+    <h3>💾 Shared memory <span style="color:var(--muted);font-weight:400;font-size:.85rem">(data/)</span></h3>
+    <p class="role">One source of truth — anything you tell voice-Nemo, text-Nemo also knows.</p>
+    <div class="chips">
+      <span class="chip">memories/*.md + ABOUT_ME</span>
+      <span class="chip">voice_journal.jsonl</span>
+      <span class="chip">memory_index.db (semantic)</span>
+      <span class="chip">pyclaudir.db (history + reminders)</span>
+    </div>
+  </div>
+
+  <div class="tier cloud">
+    <h3>☁️ External services <span style="color:var(--muted);font-weight:400;font-size:.85rem">(all China-friendly)</span></h3>
+    <div class="chips">
+      <span class="chip">Qwen Omni Realtime (voice)</span>
+      <span class="chip">DashScope embeddings (memory)</span>
+      <span class="chip">Edge TTS (proactive speech)</span>
+    </div>
+  </div>
+
+
+  <h2><span class="n">2</span> Voice — how a conversation flows</h2>
+  <p class="sub">Native <b>speech-to-speech</b>: audio in → audio out, one model (like Gemini Live, but works in China).
+     No separate transcribe-then-speak — that's why it's fast and natural.</p>
+  <div class="card flow">
+    <div class="step"><div class="b">1</div><div class="t"><b>"Hey Nemo"</b> <span>— detected on-device (no audio leaves the phone)</span></div></div>
+    <div class="step"><div class="b">2</div><div class="t"><b>Mic opens</b> <span>— the live session starts; your speech streams to nemo-voice</span></div></div>
+    <div class="step"><div class="b">3</div><div class="t"><b>Qwen understands + acts</b> <span>— calls tools as needed (weather, set reminder, open an app…)</span></div></div>
+    <div class="step"><div class="b">4</div><div class="t"><b>Nemo speaks back</b> <span>— natural voice; mic is muted while he talks so he can't cut himself off</span></div></div>
+    <div class="step"><div class="b">5</div><div class="t"><b>🔊 "It's 34°, and I'll nudge you at 2 to call Aziz."</b></div></div>
+  </div>
+
+
+  <h2><span class="n">3</span> Memory — how Nemo knows you</h2>
+  <p class="sub">Three layers, shared between voice and text. Recall works by <b>meaning</b>, not keywords.</p>
+  <div class="layers">
+    <div class="layer"><span class="ic">📝</span><div><b>Facts</b><span>memories/*.md + your ABOUT_ME profile — curated, durable. Written when you say "remember this".</span></div></div>
+    <div class="layer"><span class="ic">📜</span><div><b>Journal</b><span>voice_journal.jsonl — every spoken turn, so nothing is lost.</span></div></div>
+    <div class="layer"><span class="ic">🔎</span><div><b>Semantic index</b><span>memory_index.db — embeds everything so "what coffee do I drink?" finds "dark roast" with no shared words.</span></div></div>
+  </div>
+  <p class="sub" style="margin-top:14px">A nightly self-reflection + weekly consolidation keep memory tidy and refresh your profile automatically.</p>
+
+
+  <h2><span class="n">4</span> Proactive — Nemo reaching out first</h2>
+  <p class="sub">This is what makes Nemo a "Jarvis", not a Q&amp;A bot. The engine runs a loop and can <b>speak to you on its own.</b></p>
+  <div class="trio">
+    <div class="mini"><b>⏰</b>Reminders<br><span style="color:var(--muted)">"remind me at 2pm"</span></div>
+    <div class="mini"><b>🌅</b>Briefings<br><span style="color:var(--muted)">optional, scheduled</span></div>
+    <div class="mini"><b>🪝</b>Webhooks<br><span style="color:var(--muted)">CI, email, IFTTT…</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="card" style="text-align:center">Engine loop (every 60s) + <code>/hook</code> → <b>Claude Code composes a natural, in-character nudge</b></div>
+  <div class="arrow">↓</div>
+  <div class="card mem" style="text-align:center"><b>🔊 The phone speaks it</b> — text + voice, even when pocketed</div>
+
+
+  <h2><span class="n">5</span> What Nemo can do</h2>
+  <div class="grid">
+    <div class="cap"><span class="e">🗣️</span><div><b>Talk</b><span>Voice chat; understands English / Russian / Uzbek (mixed), replies in English.</span></div></div>
+    <div class="cap"><span class="e">📞</span><div><b>Phone control</b><span>Open apps, set alarms/timers, message a contact on Telegram, tap/type.</span></div></div>
+    <div class="cap"><span class="e">⏰</span><div><b>Scheduling</b><span>"Remind me at 2pm…" → fires &amp; speaks; list/cancel; optional briefings.</span></div></div>
+    <div class="cap"><span class="e">🔎</span><div><b>Web search</b><span>Looks things up live and reads the answer back.</span></div></div>
+    <div class="cap"><span class="e">🌤️</span><div><b>Skills</b><span>Drop-in capabilities (weather today; add more with no code).</span></div></div>
+    <div class="cap"><span class="e">🧠</span><div><b>Memory</b><span>Remembers facts + conversations, recalls by meaning, shared across voice &amp; text.</span></div></div>
+  </div>
+
+
+  <h2><span class="n">6</span> Privacy &amp; security</h2>
+  <ul class="sec">
+    <li><span class="e">📱</span><div><b>App-only</b> — no Telegram dependency; the phone is the only interface. Wake word &amp; all audio capture are on-device.</div></li>
+    <li><span class="e">🙈</span><div><b>Read-gating</b> — Nemo can never read your screen, messages, or camera on its own or during a reminder. Only when you explicitly ask, in that moment.</div></li>
+    <li><span class="e">🔐</span><div><b>Biometric gate</b> on sensitive actions (camera, typing).</div></li>
+    <li><span class="e">🛡️</span><div><b>Encrypted transport</b> — TLS with a pinned certificate; app updates are signature- + hash-verified.</div></li>
+  </ul>
+
+
+  <h2><span class="n">7</span> Where things live</h2>
+  <pre><b>nemo-app/</b>            Flutter app  (UI, voice session, wake word, phone control)
+  android/.../WakeWordController.kt   on-device openWakeWord (ONNX)
+  lib/services/                       voice_session, nemo_service, phone_command…
+<b>nemo-voice/server/</b>   Realtime voice  (Qwen Omni Realtime bridge)
+  qwen_realtime.py   the speech↔speech bridge
+  voice_brain.py     Nemo's identity + tool routing
+  memory_index.py    semantic recall  |  reminders.py  |  skills/ (weather, web_search)
+<b>pyclaudir/</b>           The engine / brain
+  app_api.py         link to the phone + /hook webhook
+  __main__.py        startup + the 60s reminder loop
+  semantic_memory.py engine-side recall  |  tools/ (phone_action, reminders, search…)
+<b>data/</b>                Shared memory (memories, journal, index, db) — single source of truth</pre>
+
+  <div class="note">
+    💡 <b>The idea:</b> Nemo is built in layers — a fast realtime voice on top, a reasoning brain
+    underneath, one shared memory in the middle, and a proactive loop that lets him speak first.
+    Each piece is small and swappable: the voice model, the wake word, and individual skills can
+    all change without touching the rest.
+  </div>
+
+</div>
+</body>
+</html>
