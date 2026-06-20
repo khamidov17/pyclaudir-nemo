@@ -34,7 +34,17 @@ Future<void> main() async {
   final isPaired = serverUrl.isNotEmpty && appToken.isNotEmpty;
 
   final nemo = NemoService();
-  if (isPaired) nemo.configure(serverUrl, appToken);
+  // App-global TTS playback: proactive audio (reminders, briefings) must speak
+  // no matter which screen is open — or none — so the player is wired here,
+  // once, instead of inside the chat screens.
+  final voice = VoiceService();
+  nemo.audioB64.listen((b64) => voice.playAudio(b64));
+  if (isPaired) {
+    nemo.configure(serverUrl, appToken);
+    // Connect at launch so a scheduled reminder can reach (and speak on) the
+    // phone even if the user never opens a chat screen. Auto-reconnects on drop.
+    nemo.connect();
+  }
 
   final wake = WakeWordService();
   await wake.init();
@@ -57,10 +67,16 @@ Future<void> main() async {
   );
   wake.onWakeWord = () => voiceSession.start();
 
-  // Start background foreground service so wake word works with screen off.
-  // Off by default — only when the user has opted in via Settings.
-  if (isPaired && await WakeWordService.isEnabled()) {
-    await BackgroundWakeWordService.start();
+  // Keep Nemo alive in the background whenever paired — so scheduled reminders
+  // and briefings can be spoken on time even with the phone pocketed (and so
+  // wake word, when enabled, survives the screen turning off).
+  if (isPaired) {
+    final wakeOn = await WakeWordService.isEnabled();
+    await BackgroundWakeWordService.start(
+      statusText: wakeOn
+          ? 'Listening for "Hey Nemo"…'
+          : 'Active — ready for voice and reminders',
+    );
   }
 
   final updater = UpdateService();
@@ -75,7 +91,7 @@ Future<void> main() async {
       child: MultiProvider(
         providers: [
           ChangeNotifierProvider.value(value: nemo),
-          ChangeNotifierProvider(create: (_) => VoiceService()),
+          ChangeNotifierProvider.value(value: voice),
           ChangeNotifierProvider.value(value: wake),
           ChangeNotifierProvider.value(value: updater),
           ChangeNotifierProvider.value(value: voiceSession),

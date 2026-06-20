@@ -93,6 +93,22 @@ async def pending_with_auto_seed_key(db: Database, key: str) -> int:
     return int(row["c"]) if row is not None else 0
 
 
+async def any_with_auto_seed_key(db: Database, key: str) -> int:
+    """Count reminders with this ``auto_seed_key`` in ANY status.
+
+    Used for optional seeded reminders (e.g. briefings) that should be
+    installed once and then STAY however the user left them — unlike the
+    mandatory loops (:func:`pending_with_auto_seed_key`) which re-seed when
+    cancelled. If the user cancels a briefing, this still counts the row, so
+    the next startup won't resurrect it.
+    """
+    row = await db.fetch_one(
+        "SELECT COUNT(*) AS c FROM reminders WHERE auto_seed_key = ?",
+        (key,),
+    )
+    return int(row["c"]) if row is not None else 0
+
+
 async def fetch_reminder_by_id(db: Database, reminder_id: int) -> dict | None:
     """Fetch a single reminder by id, or None if not found."""
     row = await db.fetch_one(

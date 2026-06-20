@@ -48,8 +48,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
     await nemo.connect();
     await context.read<UpdateService>().checkForUpdate(nemo.serverUrl);
 
-    // Edge TTS audio → play automatically
-    nemo.audioB64.listen((b64) => voice.playAudio(b64));
+    // TTS playback is wired app-globally in main.dart so proactive audio
+    // (reminders/briefings) plays on any screen — not duplicated here.
 
     // Wake word handling lives in main.dart (VoiceSessionController) so
     // "hey nemo" works hands-free from ANY app — no UI navigation here.

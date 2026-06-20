@@ -12,7 +12,6 @@ import '../models/message.dart';
 import '../services/chat_storage.dart';
 import '../services/nemo_service.dart';
 import '../services/recording_service.dart';
-import '../services/voice_service.dart';
 import '../theme.dart';
 import '../widgets/message_bubble.dart';
 import 'voice_chat_screen.dart';
@@ -32,7 +31,6 @@ class _ChatScreenState extends State<ChatScreen> {
   List<Message> _messages = [];
   bool _thinking = false;
   late StreamSubscription _msgSub;
-  late StreamSubscription _audioSub;
   late StreamSubscription _errorSub;
   late RecordingService _rec;
   final _imagePicker = ImagePicker();
@@ -44,9 +42,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _loadMessages();
     final nemo = context.read<NemoService>();
     _msgSub = nemo.messages.listen(_onNemoReply);
-    _audioSub = nemo.audioB64.listen((b64) {
-      context.read<VoiceService>().playAudio(b64);
-    });
+    // Audio (TTS) playback is wired app-globally in main.dart — not here.
     _errorSub = nemo.errors.listen((message) {
       if (!mounted) return;
       setState(() => _thinking = false);
@@ -337,7 +333,6 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _msgSub.cancel();
-    _audioSub.cancel();
     _errorSub.cancel();
     _ctrl.dispose();
     _scroll.dispose();

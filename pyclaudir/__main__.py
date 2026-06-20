@@ -31,6 +31,7 @@ from .db.database import Database
 from .db.messages import insert_tool_call
 from .db.reminders import (
     advance_recurring_reminder,
+    any_with_auto_seed_key,
     fetch_due_reminders,
     insert_auto_seeded_reminder,
     mark_reminder_sent,
@@ -131,6 +132,60 @@ async def _seed_default_reminders(db, config) -> None:
     # Always check these — re-seeds if deleted between restarts
     await _seed_profile_synthesis_reminder(db, config)
     await _seed_memory_consolidation_reminder(db, config)
+    await _seed_briefing_reminders(db, config)
+
+
+# Proactive spoken briefings. Local times converted to UTC cron using
+# NEMO_UTC_OFFSET (Tashkent = +5). Overridable via env. Unlike the mandatory
+# loops these are seeded ONCE (any-status check) so a user who cancels one
+# keeps it off. The text fires into the engine, which speaks it on the phone.
+_BRIEFINGS = (
+    (
+        "morning-brief-default",
+        "NEMO_MORNING_BRIEF_CRON",
+        "0 3 * * *",  # 08:00 Tashkent
+        "Good-morning briefing for Avazbek — speak it warmly like a friend, 2-3 "
+        "sentences: greet him by name, today's date and time, anything you "
+        "remember he's working on or has coming up, and one upbeat nudge for the "
+        "day. Use send_message so it's spoken on his phone.",
+    ),
+    (
+        "evening-brief-default",
+        "NEMO_EVENING_BRIEF_CRON",
+        "0 16 * * *",  # 21:00 Tashkent
+        "Evening check-in for Avazbek — speak it warmly, 2-3 sentences: ask how "
+        "his day went, recap anything notable he told you today, and remind him "
+        "of anything pending for tomorrow. Use send_message so it's spoken on "
+        "his phone.",
+    ),
+)
+
+
+async def _seed_briefing_reminders(db, config) -> None:
+    """Install the morning + evening spoken briefings, once each."""
+    import os
+
+    for key, env, default_cron, text in _BRIEFINGS:
+        if await any_with_auto_seed_key(db, key) > 0:
+            continue
+        cron_expr = os.environ.get(env, default_cron)
+        first_trigger = datetime.now(timezone.utc)
+        try:
+            from croniter import croniter
+
+            first_trigger = croniter(cron_expr, first_trigger).get_next(datetime)
+        except ImportError:  # pragma: no cover
+            pass
+        await insert_auto_seeded_reminder(
+            db,
+            auto_seed_key=key,
+            chat_id=config.owner_id,
+            user_id=-1,
+            text=text,
+            trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
+            cron_expr=cron_expr,
+        )
+        log.info("seeded %s (cron=%s, next=%s UTC)", key, cron_expr, first_trigger)
 
 
 async def _seed_profile_synthesis_reminder(db, config) -> None:
@@ -224,7 +279,9 @@ def _bootstrap_access(config: Config) -> None:
     access = load_access(config.access_path)
     log.info(
         "access: policy=%s, allowed_users=%d, allowed_chats=%d",
-        access.policy, len(access.allowed_users), len(access.allowed_chats),
+        access.policy,
+        len(access.allowed_users),
+        len(access.allowed_chats),
     )
 
 
@@ -253,14 +310,17 @@ def _build_stores(config: Config, db: Database, plugins: Plugins) -> _Stores:
     )
     instructions.ensure_dirs()
     skills = SkillsStore(
-        root=project_root / "skills", disabled=plugins.skills_disabled,
+        root=project_root / "skills",
+        disabled=plugins.skills_disabled,
     )
     skills.ensure_root()
     attachments = AttachmentStore(config.attachments_dir)
     renders = RenderStore(config.renders_dir)
     renders.ensure_root()
     rate_limiter = RateLimiter(
-        db=db, limit=config.rate_limit_per_min, owner_id=config.owner_id,
+        db=db,
+        limit=config.rate_limit_per_min,
+        owner_id=config.owner_id,
     )
     return _Stores(
         memory=memory,
@@ -294,7 +354,8 @@ def _build_external_mcp_config(
             }
             log.info(
                 "mcp %s configured (type=stdio, command=%s)",
-                plugin.name, plugin.command,
+                plugin.name,
+                plugin.command,
             )
         else:  # http or sse — remote server, optional static auth headers
             entry: dict = {"type": plugin.type, "url": plugin.url}
@@ -303,7 +364,9 @@ def _build_external_mcp_config(
             extra_mcp[plugin.name] = entry
             log.info(
                 "mcp %s configured (type=%s, url=%s)",
-                plugin.name, plugin.type, plugin.url,
+                plugin.name,
+                plugin.type,
+                plugin.url,
             )
         mcp_allowed_tools.extend(plugin.allowed_tools)
     return extra_mcp, mcp_allowed_tools
@@ -330,10 +393,13 @@ async def _advance_or_close_reminder(db: Database, row: dict) -> None:
         from croniter import croniter
 
         next_dt = croniter(
-            cron_expr, datetime.now(timezone.utc),
+            cron_expr,
+            datetime.now(timezone.utc),
         ).get_next(datetime)
         await advance_recurring_reminder(
-            db, row["id"], next_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            db,
+            row["id"],
+            next_dt.strftime("%Y-%m-%d %H:%M:%S"),
         )
     except ImportError:
         log.warning(
@@ -403,7 +469,8 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
         try:
             now_dt = datetime.now(timezone.utc)
             due = await fetch_due_reminders(
-                db, now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                db,
+                now_dt.strftime("%Y-%m-%d %H:%M:%S"),
             )
         except Exception:
             log.exception("reminder loop: fetch_due_reminders failed")
@@ -415,7 +482,9 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
         for row in due:
             try:
                 log.info(
-                    "firing reminder #%d (chat=%s)", row["id"], row["chat_id"],
+                    "firing reminder #%d (chat=%s)",
+                    row["id"],
+                    row["chat_id"],
                 )
                 await _fire_one_reminder(db, engine, row)
                 # NB: not "fired" — the row stays ``pending`` until the
@@ -427,13 +496,15 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
 
 
 def _install_signal_handlers(
-    worker: CcWorker, stop_event: asyncio.Event,
+    worker: CcWorker,
+    stop_event: asyncio.Event,
 ) -> None:
     """Wire SIGINT/SIGTERM to the same stop path. Tells the cc supervisor
     we're shutting down BEFORE it observes the subprocess exit (the SIGINT
     propagates to the same process group, so cc is exiting in parallel).
     Without this the supervisor treats the clean exit as a crash and
     respawns."""
+
     def _stop(*_a) -> None:
         log.info("signal received, shutting down")
         worker._stop_supervisor.set()
@@ -451,6 +522,7 @@ async def _async_main() -> None:
     config.ensure_dirs()
 
     from pyclaudir.security import kill_marker_exists
+
     if kill_marker_exists(config.data_dir):
         logging.getLogger(__name__).warning(
             "kill_marker present — refusing to start. Remove %s/kill_marker to restart.",
@@ -503,6 +575,7 @@ async def _async_main() -> None:
 
     # Mobile app WebSocket bridge
     import os
+
     app_token = os.environ.get("NEMO_APP_TOKEN", "") or ""
     app_port = int(os.environ.get("NEMO_APP_PORT", "8765") or "8765")
     app_api: AppApiServer | None = None
@@ -510,8 +583,11 @@ async def _async_main() -> None:
         broker = PhoneBroker(data_dir=config.data_dir)
         ctx.phone_broker = broker
         app_api = AppApiServer(
-            token=app_token, owner_id=config.owner_id, ctx=ctx,
-            broker=broker, data_dir=config.data_dir,
+            token=app_token,
+            owner_id=config.owner_id,
+            ctx=ctx,
+            broker=broker,
+            data_dir=config.data_dir,
         )
         await app_api.start(port=app_port)
     else:
@@ -522,7 +598,8 @@ async def _async_main() -> None:
     schema_path.write_text(schema_json())
     extra_mcp, mcp_allowed_tools = _build_external_mcp_config(plugins)
     mcp_config_path = mcp.write_mcp_config(
-        tmpdir / "mcp.json", extra_servers=extra_mcp,
+        tmpdir / "mcp.json",
+        extra_servers=extra_mcp,
     )
     log.info("mcp config written to %s", mcp_config_path)
 
@@ -606,7 +683,8 @@ async def _async_main() -> None:
     engine = None  # type: ignore[assignment]
 
     worker = CcWorker(
-        spec, config,
+        spec,
+        config,
         heartbeat=ctx.heartbeat,
         on_crash=_on_cc_crash,
         on_giveup=_on_cc_giveup,
@@ -642,7 +720,9 @@ async def _async_main() -> None:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             log.debug(
                 "send_chat_action chat=%s returned=%r elapsed=%dms",
-                chat_id, ok, elapsed_ms,
+                chat_id,
+                ok,
+                elapsed_ms,
             )
         except Exception as exc:
             log.warning("send_chat_action failed for chat %s: %s", chat_id, exc)
@@ -654,7 +734,8 @@ async def _async_main() -> None:
             log.warning("error notify failed for chat %s: %s", chat_id, exc)
 
     engine = Engine(
-        worker, config,
+        worker,
+        config,
         debounce_ms=config.debounce_ms,
         db=db,
         typing_action=_typing,
@@ -666,7 +747,8 @@ async def _async_main() -> None:
         app_api.set_engine(engine)
 
     reminder_task = asyncio.create_task(
-        _reminder_loop(db, engine), name="pyclaudir-reminders",
+        _reminder_loop(db, engine),
+        name="pyclaudir-reminders",
     )
 
     dispatcher.engine = engine

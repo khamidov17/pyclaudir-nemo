@@ -19,6 +19,7 @@ from pathlib import Path
 import aiohttp
 
 import phone_tools
+import reminders
 import voice_history
 
 LOG = logging.getLogger("nemo.voice_brain")
@@ -68,7 +69,10 @@ _IDENTITY = (
     "You share Avazbek's memory with his text assistant. The moment he tells you something worth "
     "keeping — a preference, a fact, a plan, a name, a person — call `remember` so you never "
     "forget it. Use `recall` to look things up. Only send a Telegram message when he clearly "
-    "asks you to."
+    "asks you to.\n"
+    "When he says to remind him of something ('remind me at 2pm to call Aziz', 'wake me at 7'), "
+    "call `set_reminder` — at that time you'll speak it back to him on his phone. Confirm in a "
+    "few warm words like a friend would ('got it, I'll nudge you at 2')."
 )
 
 
@@ -220,6 +224,7 @@ FUNCTIONS: list[dict] = [
         "parameters": {"type": "object", "properties": {}},
     },
     *phone_tools.FUNCTIONS,
+    *reminders.FUNCTIONS,
 ]
 
 
@@ -232,6 +237,8 @@ async def dispatch(name: str, args: dict, bridge=None) -> str:
     try:
         if name in phone_tools.PHONE_TOOL_NAMES:
             return await phone_tools.dispatch(name, args, bridge)
+        if name in reminders.TOOL_NAMES:
+            return reminders.dispatch(name, args)
         if name == "remember":
             return _remember(args.get("note", ""))
         if name == "recall":
