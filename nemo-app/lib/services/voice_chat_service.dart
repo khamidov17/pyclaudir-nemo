@@ -243,7 +243,10 @@ class VoiceChatService extends ChangeNotifier {
     if (_userStopping || !_active) return;
     if (_reconnecting || (_reconnectTimer?.isActive ?? false)) return;
     if (_reconnectAttempts >= _maxReconnects) {
-      _errors.add('Voice connection lost — tap to reconnect.');
+      _errors.add('Voice connection lost — say "hey nemo" to start again.');
+      // Tell the controller the session died on its own so it re-arms the wake
+      // word (its stop()/idle path is the only thing that hands the mic back).
+      _controls.add('ended');
       stop();
       return;
     }

@@ -74,13 +74,20 @@ class WakeWordService extends ChangeNotifier {
     }
     await _ensureSpeech();
     if (_speech == null) return;
-    try {
-      await _speech!.start();
-      _running = true;
-      notifyListeners();
-      debugPrint('WakeWordService: listening (vosk, no ding)');
-    } catch (e) {
-      debugPrint('WakeWord start failed: $e');
+    // Re-arming right after a voice session: Android may not have released the
+    // mic to us yet, so the first grab can fail. Retry once after a short wait
+    // before giving up — otherwise "hey nemo" silently dies until app restart.
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        await _speech!.start();
+        _running = true;
+        notifyListeners();
+        debugPrint('WakeWordService: listening (vosk, no ding)');
+        return;
+      } catch (e) {
+        debugPrint('WakeWord start failed (attempt ${attempt + 1}): $e');
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
     }
   }
 

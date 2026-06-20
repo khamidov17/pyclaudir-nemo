@@ -147,6 +147,11 @@ class VoiceSessionController extends ChangeNotifier {
       _player.flush();
       _resetIdle();
       _add('✓ reconnected');
+    } else if (signal == 'ended') {
+      // The voice service gave up after exhausting reconnects. It already tore
+      // down its own mic/socket; we must hand the mic back to "hey nemo" or the
+      // wake word stays dead until the app restarts.
+      _onSessionEnded();
     }
     notifyListeners();
   }
@@ -207,6 +212,21 @@ class VoiceSessionController extends ChangeNotifier {
   }
 
   Future<void> toggle() async => isActive ? stop() : start();
+
+  /// The voice service self-terminated (reconnects exhausted). Mirror stop()'s
+  /// cleanup — but DON'T call _voice.stop() (it already stopped itself) — and
+  /// re-arm the wake word so "hey nemo" works again.
+  Future<void> _onSessionEnded() async {
+    _gen++;
+    _unmuteTimer?.cancel();
+    _idleTimer?.cancel();
+    nemoSpeaking = false;
+    _estPlaybackEndMs = 0;
+    idleClosed = true;
+    await _player.stop();
+    await _wake.start();
+    notifyListeners();
+  }
 
   void _resetIdle() {
     _idleTimer?.cancel();
