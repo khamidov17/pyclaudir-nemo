@@ -136,10 +136,32 @@ class UpdateService extends ChangeNotifier {
 
   /// Last-resort fallback for ROMs that silently block app-initiated installs
   /// (MIUI). No hash check is possible on this path — keep it user-triggered.
+  /// Uses a ONE-TIME download token (fetched with the header-authed app token)
+  /// so the long-lived app token never lands in browser history.
   Future<void> openDownloadInBrowser(String serverBaseUrl) async {
     final token = await _storage.read(key: 'app_token') ?? '';
-    final url = '${_toHttp(serverBaseUrl)}/apk/download?token=$token';
-    await _intents.invokeMethod('openUrl', {'url': url});
+    final base = _toHttp(serverBaseUrl);
+    // Get a one-time download token. NEVER fall back to the long-lived app
+    // token in a browser URL (it would leak the master credential into browser
+    // history); abort instead — the in-app verified download is the primary path.
+    String? dlToken;
+    try {
+      final client = IOClient(await SecureNet.httpClient());
+      final res = await client.get(
+        Uri.parse('$base/apk/dltoken'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        dlToken = jsonDecode(res.body)['token'] as String?;
+      }
+    } catch (e) {
+      debugPrint('dltoken fetch failed: $e');
+    }
+    if (dlToken == null || dlToken.isEmpty) {
+      throw UpdateException(
+          'Could not get a download link — use the in-app update instead.');
+    }
+    await _intents.invokeMethod('openUrl', {'url': '$base/apk/download?token=$dlToken'});
     _updateAvailable = false;
     notifyListeners();
   }

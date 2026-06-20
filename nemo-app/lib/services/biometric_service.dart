@@ -12,13 +12,14 @@ class BiometricService {
   static final _auth = LocalAuthentication();
   static int _failCount = 0;
 
-  // Actions that capture, type arbitrary text into a focused field, or
-  // install software require a fresh biometric confirmation. (Messaging via
-  // tg_msg is deliberately NOT here: it must work hands-free in a background
-  // voice session, where no UI is available to confirm. Its protection is the
-  // authenticated, owner-only server path — not an in-app prompt.)
+  // Phone-control verbs that require a fresh biometric: capturing the camera or
+  // typing arbitrary text into a focused field. ('install' was removed — OTA
+  // install never routes through here; it's protected by APK signature pinning
+  // + the OS installer prompt. 'tg_msg' is deliberately NOT gated so it works
+  // hands-free in a background voice session; its protection is the
+  // authenticated, owner-only server path.)
   static const _sensitiveVerbs = {
-    'camera', 'type', 'install',
+    'camera', 'type',
   };
 
   static bool isSensitive(String command) =>

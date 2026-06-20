@@ -132,7 +132,16 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ],
         ),
       );
-      if (fallback == true && mounted) await updater.openDownloadInBrowser(url);
+      if (fallback == true && mounted) {
+        try {
+          await updater.openDownloadInBrowser(url);
+        } catch (e2) {
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('$e2')));
+          }
+        }
+      }
     }
   }
 

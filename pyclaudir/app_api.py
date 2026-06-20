@@ -55,7 +55,26 @@ class AppApiServer:
         self._data_dir = data_dir
         self._engine: object | None = None
         self._server: uvicorn.Server | None = None
+        # One-time, short-lived APK download tokens (for the browser fallback,
+        # so the long-lived app token never lands in browser history).
+        self._dl_tokens: dict[str, float] = {}
         self.app = self._build_app()
+
+    def _prune_dl_tokens(self) -> None:
+        import time
+
+        now = time.monotonic()
+        self._dl_tokens = {t: e for t, e in self._dl_tokens.items() if e > now}
+
+    def _valid_dl_token(self, token: str) -> bool:
+        """True if `token` is a known, unexpired download token. Time-limited
+        (2 min) but NOT single-use: a browser / download-manager makes several
+        requests (probe, range) for one file, so it must work more than once
+        within the short window."""
+        if not token:
+            return False
+        self._prune_dl_tokens()
+        return token in self._dl_tokens
 
     def set_engine(self, engine: object) -> None:
         self._engine = engine
@@ -115,10 +134,30 @@ class AppApiServer:
                     apk_hash = hashlib.sha256(apk_path.read_bytes()).hexdigest()
             return {"version": v, "sha256": apk_hash}
 
+        @app.get("/apk/dltoken")
+        async def apk_dltoken(request: Request, token: str = "") -> dict:
+            """Issue a one-time, 2-minute APK download token (header-authed) so
+            the browser fallback never carries the long-lived app token."""
+            if not _auth(request, token):
+                from fastapi import HTTPException
+
+                raise HTTPException(401, "unauthorized")
+            import secrets
+            import time
+
+            # Prune expired + bound the dict so repeated issuance can't grow it.
+            self._prune_dl_tokens()
+            if len(self._dl_tokens) > 100:
+                self._dl_tokens.clear()
+            t = secrets.token_urlsafe(24)
+            self._dl_tokens[t] = time.monotonic() + 120
+            return {"token": t}
+
         @app.get("/apk/download")
         async def apk_download(request: Request, token: str = "") -> FileResponse:
-            """Authenticated APK download."""
-            if not _auth(request, token):
+            """APK download — accepts the app token (header/query) OR a valid
+            one-time download token."""
+            if not (_auth(request, token) or self._valid_dl_token(token)):
                 from fastapi import HTTPException
 
                 raise HTTPException(401, "unauthorized")

@@ -119,7 +119,10 @@ def _to_command(name: str, args: dict) -> str | None:
     if name == "set_timer":
         return _timer_command(args)
     if name == "message_contact":
-        contact = str(args.get("name", "")).strip()
+        # The app parses "tg_msg <name>|<text>" by splitting on the first '|',
+        # so a '|' in the name would corrupt it — strip it from the name only
+        # (text after the first '|' is preserved fine).
+        contact = str(args.get("name", "")).strip().replace("|", " ")
         text = str(args.get("text", "")).strip()
         if not contact or not text:
             return None

@@ -1,2 +1,2 @@
-const nemoVersionName = '1.0.49';
+const nemoVersionName = '1.0.50';
 const nemoVersionLabel = '(v$nemoVersionName)';

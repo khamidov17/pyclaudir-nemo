@@ -83,8 +83,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       try {
         await updater.downloadAndInstall(url);
       } catch (e) {
-        snack('Verified install failed: $e — falling back to browser.');
-        await updater.openDownloadInBrowser(url);
+        snack('Verified install failed — trying browser.');
+        try {
+          await updater.openDownloadInBrowser(url);
+        } catch (e2) {
+          snack('$e2');
+        }
       }
     } else {
       snack("You're on the latest version.");

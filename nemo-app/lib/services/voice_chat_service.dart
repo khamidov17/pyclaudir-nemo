@@ -198,7 +198,13 @@ class VoiceChatService extends ChangeNotifier {
     if (_userStopping) return false;
     final IOWebSocketChannel ch;
     try {
-      ch = IOWebSocketChannel.connect(uri, customClient: client);
+      // pingInterval surfaces a silently-dead connection (NAT/firewall drop)
+      // within ~20s so auto-reconnect can recover it.
+      ch = IOWebSocketChannel.connect(
+        uri,
+        customClient: client,
+        pingInterval: const Duration(seconds: 20),
+      );
       await ch.ready.timeout(const Duration(seconds: 8));
     } catch (e) {
       return false;

@@ -71,6 +71,7 @@ class NemoService extends ChangeNotifier {
       _channel = IOWebSocketChannel.connect(
         uri,
         customClient: await SecureNet.httpClient(),
+        pingInterval: const Duration(seconds: 20),
       );
       await _channel!.ready;
       // Stay "connecting" until the server's auth-gated "connected" frame

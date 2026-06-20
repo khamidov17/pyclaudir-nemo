@@ -58,6 +58,10 @@ class VoiceSessionController extends ChangeNotifier {
   int _turnChunks = 0;
   int _turnBytes = 0;
   bool _busy = false;
+  // Bumped on every session boundary (reconnect/stop). A pending unmute timer
+  // captures the generation it was armed under and no-ops if it changed, so a
+  // stale timer from a previous session can never reopen the mic.
+  int _gen = 0;
 
   void _wire() {
     _voice.transcripts.listen((t) {
@@ -102,9 +106,11 @@ class VoiceSessionController extends ChangeNotifier {
       final remaining =
           _estPlaybackEndMs - DateTime.now().millisecondsSinceEpoch + 1100;
       _unmuteTimer?.cancel();
+      final gen = _gen;
       _unmuteTimer = Timer(
         Duration(milliseconds: remaining.clamp(0, _maxMuteMs)),
         () {
+          if (gen != _gen) return; // stale — a reconnect/stop happened since
           _voice.setMuted(false);
           nemoSpeaking = false;
           _add('🎤 mic open');
@@ -125,15 +131,19 @@ class VoiceSessionController extends ChangeNotifier {
       _voice.setMuted(false);
       _resetIdle();
     } else if (signal == 'reconnecting') {
-      // Connection dropped — don't idle-close while we retry; the server
-      // restores context on the new session so the talk resumes seamlessly.
+      // Connection dropped — new session boundary: bump the generation so any
+      // pending unmute timer from the old session can't fire. Don't idle-close
+      // while we retry; the server restores context on the new session.
+      _gen++;
       _idleTimer?.cancel();
       _unmuteTimer?.cancel();
       _add('… reconnecting');
     } else if (signal == 'reconnected') {
-      // Fresh session is up — clear half-duplex state so the mic is live.
+      // Fresh session is up — clear half-duplex state on BOTH sides so the mic
+      // is live (the service reset _muted; mirror nemoSpeaking here).
       nemoSpeaking = false;
       _estPlaybackEndMs = 0;
+      _voice.setMuted(false);
       _player.flush();
       _resetIdle();
       _add('✓ reconnected');
@@ -184,6 +194,7 @@ class VoiceSessionController extends ChangeNotifier {
   }
 
   Future<void> stop() async {
+    _gen++; // invalidate any pending unmute timer
     _unmuteTimer?.cancel();
     _idleTimer?.cancel();
     nemoSpeaking = false;

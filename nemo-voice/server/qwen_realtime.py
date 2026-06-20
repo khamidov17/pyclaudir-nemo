@@ -272,6 +272,11 @@ class _QwenPump:
             self._turn_timer.cancel()
             self._turn_timer = None
         self.agent_started = False
+        # Persist what Nemo had said so far — a barged-into turn still counts
+        # toward memory (don't drop the partial reply).
+        if self._reply.strip():
+            voice_history.add("nemo", self._reply)
+            self._reply = ""
         await self._send({"type": "interrupted", "data": "barge_in"})
         await self.qwen.send(json.dumps({"type": "response.cancel"}))
 

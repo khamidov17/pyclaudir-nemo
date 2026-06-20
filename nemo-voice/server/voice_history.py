@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 LOG = logging.getLogger("nemo.voice_history")
@@ -25,6 +26,11 @@ _DATA_DIR = Path(
 _RECENT = _DATA_DIR / "voice_recent.json"
 _JOURNAL = _DATA_DIR / "voice_journal.jsonl"
 _MAX_TURNS = 24
+# Cap the permanent journal so months of daily use can't grow it without bound.
+# When it passes the size cap, keep the most recent lines (recall searches the
+# tail anyway).
+_MAX_JOURNAL_BYTES = 5 * 1024 * 1024
+_KEEP_LINES = 5000
 
 
 def _load_recent() -> list[dict]:
@@ -47,8 +53,29 @@ def add(role: str, text: str) -> None:
         _RECENT.write_text(json.dumps(items))
         with _JOURNAL.open("a") as f:
             f.write(json.dumps({"role": role, "text": text[:2000]}) + "\n")
+        _rotate_journal()
     except OSError as exc:
         LOG.warning("voice history write failed: %s", exc)
+
+
+def _rotate_journal() -> None:
+    """Trim the journal to its most recent lines once it passes the size cap.
+
+    Writes to a temp file then atomically os.replace()s it in, so readers never
+    see a half-written/partial journal. (Called inline from add() in a single
+    writer; it does NOT guard against a second concurrent writer.)
+    """
+    try:
+        if not _JOURNAL.exists() or _JOURNAL.stat().st_size < _MAX_JOURNAL_BYTES:
+            return
+        lines = _JOURNAL.read_text().splitlines()[-_KEEP_LINES:]
+        fd, tmp = tempfile.mkstemp(dir=str(_DATA_DIR), suffix=".jsonl")
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, _JOURNAL)
+        LOG.info("voice journal rotated → kept last %d lines", len(lines))
+    except OSError as exc:
+        LOG.warning("journal rotate failed: %s", exc)
 
 
 def recent(limit: int = 18) -> str:

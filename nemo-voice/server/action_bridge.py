@@ -12,11 +12,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 
 LOG = logging.getLogger("nemo.action_bridge")
 
 _TIMEOUT_SEC = 20.0
+# Rate limit so a runaway/confused model can't machine-gun the phone with
+# actions. Matches the engine's phone_broker limit (10 per 10s).
+_MAX_ACTIONS = 10
+_WINDOW_SEC = 10.0
 
 
 class ActionBridge:
@@ -25,8 +30,20 @@ class ActionBridge:
     def __init__(self, client_ws) -> None:
         self._ws = client_ws
         self._pending: dict[str, asyncio.Future] = {}
+        self._recent: list[float] = []  # monotonic timestamps of recent actions
+
+    def _rate_limited(self) -> bool:
+        now = time.monotonic()
+        self._recent = [t for t in self._recent if now - t < _WINDOW_SEC]
+        if len(self._recent) >= _MAX_ACTIONS:
+            return True
+        self._recent.append(now)
+        return False
 
     async def run(self, command: str, timeout: float = _TIMEOUT_SEC) -> dict:
+        if self._rate_limited():
+            LOG.warning("phone action rate-limited: %s", command)
+            return {"ok": False, "error": "too many phone actions — slow down"}
         action_id = uuid.uuid4().hex[:12]
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[action_id] = fut
