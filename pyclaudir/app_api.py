@@ -55,6 +55,10 @@ class AppApiServer:
         self._data_dir = data_dir
         self._engine: object | None = None
         self._server: uvicorn.Server | None = None
+        # Dedicated token for the inbound webhook (POST /hook). Separate from the
+        # app token so the owner can hand it to external services (CI, IFTTT, a
+        # script) without exposing phone control. Endpoint is off when unset.
+        self._webhook_token = os.environ.get("NEMO_WEBHOOK_TOKEN", "").strip()
         # One-time, short-lived APK download tokens (for the browser fallback,
         # so the long-lived app token never lands in browser history).
         self._dl_tokens: dict[str, float] = {}
@@ -188,6 +192,59 @@ class AppApiServer:
                 "clients": len(self._ctx.app_clients),
                 "phone_connected": self._broker.connected,
             }
+
+        def _webhook_ok(request: Request, token: str) -> bool:
+            """Auth for /hook — the dedicated webhook token (header or query)."""
+            import hmac
+
+            if not self._webhook_token:
+                return False
+            bearer = request.headers.get("authorization", "")
+            supplied = (
+                bearer[7:].strip() if bearer.lower().startswith("bearer ") else token
+            )
+            return hmac.compare_digest(supplied, self._webhook_token)
+
+        @app.post("/hook")
+        async def webhook(request: Request, token: str = "") -> dict:
+            """External event → Nemo proactively tells (and speaks to) Avazbek.
+
+            POST JSON ``{"text": "..."}`` with the webhook token. The event is
+            routed THROUGH Nemo, so he reacts in character ("heads up, your CI
+            just failed — want me to look?") and it's spoken on the phone, rather
+            than echoed verbatim. Point any service at this URL.
+            """
+            from fastapi import HTTPException
+
+            if not _webhook_ok(request, token):
+                raise HTTPException(401, "unauthorized")
+            try:
+                data = await request.json()
+            except Exception as exc:
+                raise HTTPException(400, "invalid json") from exc
+            text = (data.get("text") or "").strip()[:1000]
+            if not text:
+                raise HTTPException(400, "missing 'text'")
+            if self._engine is None:
+                raise HTTPException(503, "engine not ready")
+            framed = (
+                "[Incoming alert from an external service — tell Avazbek about "
+                "this proactively and naturally, like a heads-up from a friend. "
+                f"Keep it short.]: {text}"
+            )
+            await self._engine.submit(  # type: ignore[union-attr]
+                ChatMessage(
+                    chat_id=self._owner_id,
+                    message_id=_next_msg_id(),
+                    user_id=self._owner_id,
+                    direction="in",
+                    timestamp=datetime.now(timezone.utc),
+                    text=framed,
+                    source="webhook",
+                )
+            )
+            log.info("webhook → engine: %r", text[:80])
+            return {"status": "delivered"}
 
         @app.websocket("/ws")
         async def ws_endpoint(websocket: WebSocket, device_id: str = "") -> None:
