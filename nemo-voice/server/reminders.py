@@ -32,7 +32,7 @@ _CHAT_ID = os.environ.get("NEMO_DEFAULT_CHAT_ID", "").strip()
 
 _FMT = "%Y-%m-%d %H:%M:%S"
 
-TOOL_NAMES = {"set_reminder", "list_reminders", "cancel_reminder"}
+TOOL_NAMES = {"set_reminder", "list_reminders", "cancel_reminder", "delegate_task"}
 
 FUNCTIONS: list[dict] = [
     {
@@ -82,6 +82,26 @@ FUNCTIONS: list[dict] = [
                 "reminder_id": {"type": "integer", "description": "The id to cancel."}
             },
             "required": ["reminder_id"],
+        },
+    },
+    {
+        "name": "delegate_task",
+        "description": (
+            "Hand a bigger or technical job to your engine brain (Claude Code) to "
+            "do in the BACKGROUND — research, writing, coding, GitHub work, "
+            "multi-step tasks, anything that takes real effort. Say you're on it; "
+            "the engine works while you keep talking and reports the result back "
+            "on his phone when done. (For a quick fact, use web_search instead.)"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "The full task, in detail, as Avazbek described it.",
+                }
+            },
+            "required": ["task"],
         },
     },
 ]
@@ -154,6 +174,8 @@ def dispatch(name: str, args: dict) -> str:
             return _list()
         if name == "cancel_reminder":
             return _cancel(int(args.get("reminder_id", 0)))
+        if name == "delegate_task":
+            return delegate_task(args.get("task", ""))
         return json.dumps({"error": f"unknown reminder tool {name}"})
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
@@ -211,6 +233,24 @@ def notify_now(text: str) -> str:
     finally:
         con.close()
     return json.dumps({"status": "sent"})
+
+
+def delegate_task(task: str) -> str:
+    """Hand a bigger/technical job to the engine brain (Claude Code) to run in
+    the background. Reuses the immediate-reminder path: the engine's loop picks
+    it up, does the work with its full tools, and reports the result on the
+    phone when done — so the voice agent can ack and keep talking.
+    """
+    task = (task or "").strip()
+    if not task or not _CHAT_ID:
+        return json.dumps({"error": "nothing to do"})
+    framed = (
+        "[Background task from Avazbek — do this fully using all your tools "
+        "(including bash/code/subagents if it helps), then message him the "
+        "result concisely when finished]: " + task
+    )
+    notify_now(framed)
+    return json.dumps({"status": "delegated — working on it in the background"})
 
 
 def _list() -> str:

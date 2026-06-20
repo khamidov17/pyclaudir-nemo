@@ -295,16 +295,16 @@ class _QwenPump:
         await self._send({"type": "error", "message": err.get("message", "Qwen error")})
 
 
-async def _handle_tool(qwen, bridge, item: dict) -> None:
-    """Run a tool call and feed the result back so Nemo can keep talking."""
-    name = item.get("name", "")
-    call_id = item.get("call_id", "")
-    try:
-        args = json.loads(item.get("arguments") or "{}")
-    except json.JSONDecodeError:
-        args = {}
-    LOG.info("qwen function call: %s %s", name, args)
-    content = await voice_brain.dispatch(name, args, bridge)
+# Tools that may take a few seconds: run them in the BACKGROUND so Nemo keeps
+# talking, then inject the result so he relays it mid-conversation. Capped at 2
+# concurrent ("two background agents") so several searches can run at once.
+_BG_TOOLS = {"web_search"}
+_bg_sem = asyncio.Semaphore(2)
+_bg_tasks: set = set()
+
+
+async def _tool_output(qwen, call_id: str, content: str) -> None:
+    """Return a tool result to Qwen and let it speak."""
     await qwen.send(
         json.dumps(
             {
@@ -318,6 +318,48 @@ async def _handle_tool(qwen, bridge, item: dict) -> None:
         )
     )
     await qwen.send(json.dumps({"type": "response.create"}))
+
+
+async def _run_bg_tool(qwen, bridge, name: str, args: dict, label: str) -> None:
+    """Run a slow tool off the conversation, then inject its result to speak."""
+    async with _bg_sem:  # at most 2 background agents at once
+        try:
+            content = await voice_brain.dispatch(name, args, bridge)
+        except Exception as exc:  # noqa: BLE001
+            content = json.dumps({"error": str(exc)})
+    await _inject_text(
+        qwen,
+        f"[Your background search for '{label}' just finished — tell Avazbek the "
+        f"answer now, briefly and naturally, one or two sentences. Result: {content}]",
+    )
+
+
+async def _handle_tool(qwen, bridge, item: dict) -> None:
+    """Run a tool call and feed the result back so Nemo can keep talking."""
+    name = item.get("name", "")
+    call_id = item.get("call_id", "")
+    try:
+        args = json.loads(item.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        args = {}
+    LOG.info("qwen function call: %s %s", name, args)
+    if name in _BG_TOOLS:
+        # Ack immediately and keep the conversation going; the answer is spoken
+        # when the background task finishes.
+        label = str(args.get("query") or args.get("task") or name)[:80]
+        await _tool_output(
+            qwen,
+            call_id,
+            json.dumps(
+                {"status": "on it — searching in the background, back in a sec"}
+            ),
+        )
+        task = asyncio.create_task(_run_bg_tool(qwen, bridge, name, args, label))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
+        return
+    content = await voice_brain.dispatch(name, args, bridge)
+    await _tool_output(qwen, call_id, content)
 
 
 def _track_usage(ev: dict) -> None:
