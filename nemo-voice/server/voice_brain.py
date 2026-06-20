@@ -21,6 +21,7 @@ import aiohttp
 import memory_index
 import phone_tools
 import reminders
+import skills
 import voice_history
 
 LOG = logging.getLogger("nemo.voice_brain")
@@ -235,6 +236,7 @@ FUNCTIONS: list[dict] = [
     },
     *phone_tools.FUNCTIONS,
     *reminders.FUNCTIONS,
+    *skills.FUNCTIONS,
 ]
 
 
@@ -249,6 +251,8 @@ async def dispatch(name: str, args: dict, bridge=None) -> str:
             return await phone_tools.dispatch(name, args, bridge)
         if name in reminders.TOOL_NAMES:
             return reminders.dispatch(name, args)
+        if name in skills.TOOL_NAMES:
+            return skills.dispatch(name, args)
         if name == "remember":
             return _remember(args.get("note", ""))
         if name == "recall":
