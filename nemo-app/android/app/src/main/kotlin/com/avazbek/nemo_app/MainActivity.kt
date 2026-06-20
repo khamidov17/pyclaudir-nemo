@@ -152,6 +152,7 @@ class MainActivity : FlutterActivity() {
                     result.success(true)
                 }
                 "stop" -> { wake.stop(); result.success(true) }
+                "toast" -> { wake.toast(call.argument<String>("msg") ?: ""); result.success(true) }
                 else -> result.notImplemented()
             }
         }

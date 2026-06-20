@@ -59,6 +59,11 @@ class WakeWordService extends ChangeNotifier {
     if (_running) return;
     if (!await isEnabled()) {
       debugPrint('WakeWordService: disabled (opt in via Settings)');
+      try {
+        await _channel.invokeMethod('toast', {
+          'msg': 'Wake word is OFF — enable it in Settings',
+        });
+      } catch (_) {}
       return;
     }
     try {
