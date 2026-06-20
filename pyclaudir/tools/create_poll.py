@@ -55,13 +55,17 @@ class CreatePollArgs(BaseModel):
             if self.correct_option_id is None:
                 raise ValueError("correct_option_id is required when type='quiz'")
             if self.allows_multiple_answers:
-                raise ValueError("allows_multiple_answers is only valid for regular polls")
+                raise ValueError(
+                    "allows_multiple_answers is only valid for regular polls"
+                )
         else:
             if self.correct_option_id is not None:
                 raise ValueError("correct_option_id is only valid when type='quiz'")
             if self.explanation is not None:
                 raise ValueError("explanation is only valid when type='quiz'")
-        if self.correct_option_id is not None and self.correct_option_id >= len(self.options):
+        if self.correct_option_id is not None and self.correct_option_id >= len(
+            self.options
+        ):
             raise ValueError("correct_option_id is out of range")
         if self.open_period is not None and self.close_date is not None:
             raise ValueError("open_period and close_date are mutually exclusive")
@@ -79,7 +83,10 @@ class CreatePollTool(BaseTool):
 
     async def run(self, args: CreatePollArgs) -> ToolResult:
         if self.ctx.bot is None:
-            return ToolResult(content="bot not configured", is_error=True)
+            return ToolResult(
+                content="polls aren't available in app-only mode",
+                is_error=False,
+            )
 
         sent = await self.ctx.bot.send_poll(
             chat_id=args.chat_id,
@@ -98,7 +105,9 @@ class CreatePollTool(BaseTool):
         poll_id = sent.poll.id if sent.poll is not None else None
         log.info(
             "hot-path stage=delivered chat=%s msg=%s poll=%s",
-            args.chat_id, message_id, poll_id,
+            args.chat_id,
+            message_id,
+            poll_id,
         )
 
         if self.ctx.on_chat_replied is not None:
@@ -126,8 +135,8 @@ class CreatePollTool(BaseTool):
                 bot_user_id = 0
                 bot_username = None
                 bot_first_name = "bot"
-            stored_text = transcript_text + "\n" + "\n".join(
-                f"- {opt}" for opt in args.options
+            stored_text = (
+                transcript_text + "\n" + "\n".join(f"- {opt}" for opt in args.options)
             )
             await insert_message(
                 self.ctx.database,

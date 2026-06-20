@@ -35,7 +35,10 @@ class SendVoiceMessageTool(BaseTool):
 
     async def run(self, args: SendVoiceArgs) -> ToolResult:
         if self.ctx.bot is None:
-            return ToolResult(content="bot not configured", is_error=True)
+            return ToolResult(
+                content="voice messages aren't available in app-only mode",
+                is_error=False,
+            )
         if not args.text.strip():
             return ToolResult(content="empty text", is_error=True)
 

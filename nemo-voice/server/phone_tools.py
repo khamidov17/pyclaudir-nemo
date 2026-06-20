@@ -84,7 +84,9 @@ FUNCTIONS: list[dict] = [
             "Advanced phone control for anything without a dedicated tool. One "
             "command per call: 'ui_tree' (read the screen), 'tap X Y', "
             "'swipe X1 Y1 X2 Y2', 'press back|home', 'type TEXT', 'list_apps'. "
-            "Read the screen with ui_tree before tapping."
+            "Read the screen with ui_tree before tapping IN SERVICE of a task he "
+            "asked for. Never use ui_tree/screenshot to read his content unless "
+            "he explicitly asked you to read the screen."
         ),
         "parameters": {
             "type": "object",

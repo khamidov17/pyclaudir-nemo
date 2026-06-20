@@ -128,6 +128,11 @@ class NemoAccessibilityService : AccessibilityService() {
             return buildUiTree(root, 0)
         }
 
+        /** The package currently in the foreground — captured before Nemo opens
+         *  another app so it can hand the phone back afterwards (best-effort). */
+        fun getForegroundPackage(): String? =
+            instance?.rootInActiveWindow?.packageName?.toString()
+
         private fun buildUiTree(node: AccessibilityNodeInfo?, depth: Int): String {
             node ?: return ""
             val sb = StringBuilder()

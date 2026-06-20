@@ -162,9 +162,16 @@ _BRIEFINGS = (
 
 
 async def _seed_briefing_reminders(db, config) -> None:
-    """Install the morning + evening spoken briefings, once each."""
+    """Install the morning + evening spoken briefings, once each.
+
+    OFF by default — all scheduling is user-driven (the owner sets/cancels
+    briefings and reminders by voice). Set NEMO_SEED_BRIEFINGS=1 to opt back
+    into the two default briefings.
+    """
     import os
 
+    if os.environ.get("NEMO_SEED_BRIEFINGS") != "1":
+        return
     for key, env, default_cron, text in _BRIEFINGS:
         if await any_with_auto_seed_key(db, key) > 0:
             continue
@@ -448,6 +455,7 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
             direction="in",
             timestamp=datetime.now(timezone.utc),
             text=reminder_xml,
+            source="reminder",  # scheduler turn → blocks autonomous reads
         ),
         on_success=_make_reminder_on_success(db, row),
     )
@@ -590,6 +598,11 @@ async def _async_main() -> None:
             data_dir=config.data_dir,
         )
         await app_api.start(port=app_port)
+    elif config.app_only:
+        log.warning(
+            "app-only mode (no Telegram) but NEMO_APP_TOKEN is unset — "
+            "Nemo has NO user interface. Set NEMO_APP_TOKEN to use the app."
+        )
     else:
         log.info("NEMO_APP_TOKEN not set — mobile app bridge disabled")
 
@@ -623,61 +636,55 @@ async def _async_main() -> None:
         mcp_allowed_tools=(),
     )
 
-    # Crash-callback closures reference ``engine`` / ``dispatcher`` via
-    # late binding; the worker only invokes them after both are built.
+    # Crash-callback closures reference ``engine`` / ``dispatcher`` via late
+    # binding; the worker only invokes them after both are built.
+    async def _notify_owner(text: str, chat_id: int | None = None) -> None:
+        """Reach the user with a system notice — Telegram when a bot exists,
+        else broadcast over the app/desktop WebSocket (app-only mode)."""
+        target = config.owner_id if chat_id is None else chat_id
+        if dispatcher is not None and dispatcher.bot is not None:
+            try:
+                await dispatcher.bot.send_message(chat_id=target, text=text)
+            except Exception:
+                log.warning("owner notify (telegram) failed", exc_info=True)
+            return
+        from .app_notify import broadcast_to_app
+
+        await broadcast_to_app(ctx.app_clients, text, target)
+
     async def _on_cc_crash(attempt: int, backoff: float) -> None:
         user_text = (
             f"⚠️ Technical issue, restarting "
             f"(attempt {attempt}, retrying in {backoff:.0f}s). "
             "Please resend your last message in a moment."
         )
-        if engine is not None and engine._turn.active_chats:
-            for chat_id in engine._turn.active_chats:
-                try:
-                    await dispatcher.bot.send_message(chat_id=chat_id, text=user_text)
-                except Exception:
-                    log.warning("crash notify to %s failed", chat_id, exc_info=True)
-        owner_chat = config.owner_id
-        if owner_chat not in (engine._turn.active_chats if engine else set()):
-            try:
-                await dispatcher.bot.send_message(
-                    chat_id=owner_chat,
-                    text=f"CC error (attempt {attempt}). Check logs.",
-                )
-            except Exception:
-                log.warning("crash notify to owner failed", exc_info=True)
+        active = engine._turn.active_chats if engine else set()
+        for chat_id in active:
+            await _notify_owner(user_text, chat_id)
+        if config.owner_id not in active:
+            await _notify_owner(
+                f"CC error (attempt {attempt}). Check logs.", config.owner_id
+            )
 
     async def _on_cc_stale_session(stale_id: str) -> None:
         try:
             config.session_id_path.unlink(missing_ok=True)
         except OSError:
             log.exception("failed to delete stale session_id file")
-        try:
-            await dispatcher.bot.send_message(
-                chat_id=config.owner_id,
-                text=(
-                    "ℹ️ Previous Claude Code session expired — "
-                    "starting a fresh one. Your last message may need "
-                    "to be resent."
-                ),
-            )
-        except Exception:
-            log.warning("stale-session notify to owner failed", exc_info=True)
+        await _notify_owner(
+            "ℹ️ Previous Claude Code session expired — starting a fresh one. "
+            "Your last message may need to be resent."
+        )
 
     async def _on_cc_giveup(crash_count: int) -> None:
         user_text = (
             f"⚠️ Shutting down — Claude Code failed {crash_count} times. "
             "The operator needs to intervene."
         )
-        chats_to_notify: set[int] = set()
-        if engine is not None and engine._turn.active_chats:
-            chats_to_notify.update(engine._turn.active_chats)
+        chats_to_notify: set[int] = set(engine._turn.active_chats if engine else set())
         chats_to_notify.add(config.owner_id)
         for chat_id in chats_to_notify:
-            try:
-                await dispatcher.bot.send_message(chat_id=chat_id, text=user_text)
-            except Exception:
-                log.warning("giveup notify to %s failed", chat_id, exc_info=True)
+            await _notify_owner(user_text, chat_id)
 
     # Engine is declared here but constructed after dispatcher.
     engine = None  # type: ignore[assignment]
@@ -693,27 +700,34 @@ async def _async_main() -> None:
     await worker.start()
     await worker.supervise()
 
-    # The dispatcher owns the bot, so we build it first, then hand a
-    # closure into the engine for the typing indicator.
-    dispatcher = TelegramDispatcher(  # type: ignore[arg-type]
-        config,
-        db,
-        engine=None,
-        chat_titles=chat_titles,
-        rate_limiter=stores.rate_limiter,
-        memory_store=stores.memory,
-        external_mcp_tools=tuple(mcp_allowed_tools),
-        router=NemoRouter(
-            RouterConfig(
-                enabled=config.router_enabled,
-                claude_bin=config.claude_code_bin,
-                model=config.router_model,
-                direct_replies=config.router_direct_replies,
-            )
-        ),
-    )
+    # The dispatcher owns the Telegram bot. In app-only mode (no token) we skip
+    # it entirely — the phone app is the sole interface and inbound/outbound
+    # both flow through app_api + send_message's app broadcast.
+    dispatcher = None
+    if not config.app_only:
+        dispatcher = TelegramDispatcher(  # type: ignore[arg-type]
+            config,
+            db,
+            engine=None,
+            chat_titles=chat_titles,
+            rate_limiter=stores.rate_limiter,
+            memory_store=stores.memory,
+            external_mcp_tools=tuple(mcp_allowed_tools),
+            router=NemoRouter(
+                RouterConfig(
+                    enabled=config.router_enabled,
+                    claude_bin=config.claude_code_bin,
+                    model=config.router_model,
+                    direct_replies=config.router_direct_replies,
+                )
+            ),
+        )
 
     async def _typing(chat_id: int) -> None:
+        # Typing indicator is a Telegram concept; the app shows its own
+        # "thinking" state. No-op in app-only mode.
+        if dispatcher is None or dispatcher.bot is None:
+            return
         t0 = time.monotonic()
         try:
             ok = await dispatcher.bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -728,10 +742,7 @@ async def _async_main() -> None:
             log.warning("send_chat_action failed for chat %s: %s", chat_id, exc)
 
     async def _error_notify(chat_id: int, text: str) -> None:
-        try:
-            await dispatcher.bot.send_message(chat_id=chat_id, text=text)
-        except Exception as exc:
-            log.warning("error notify failed for chat %s: %s", chat_id, exc)
+        await _notify_owner(text, chat_id)
 
     engine = Engine(
         worker,
@@ -751,14 +762,18 @@ async def _async_main() -> None:
         name="pyclaudir-reminders",
     )
 
-    dispatcher.engine = engine
-    ctx.bot = dispatcher.bot
+    if dispatcher is not None:
+        dispatcher.engine = engine
+        ctx.bot = dispatcher.bot
     # Wire send_message → engine notification so the typing indicator
     # stops the moment the user has the message in their hand, not when
     # the entire CC turn officially ends.
     ctx.on_chat_replied = engine.notify_chat_replied
-    await dispatcher.start()
-    log.info("pyclaudir is live")
+    if dispatcher is not None:
+        await dispatcher.start()
+    log.info(
+        "pyclaudir is live (%s)", "app-only" if config.app_only else "telegram+app"
+    )
 
     stop_event = asyncio.Event()
     _install_signal_handlers(worker, stop_event)
@@ -771,9 +786,10 @@ async def _async_main() -> None:
         if worker.session_id:
             config.session_id_path.write_text(worker.session_id)
         reminder_task.cancel()
-        await dispatcher.stop()
-        if dispatcher.router is not None:
-            await dispatcher.router.close()
+        if dispatcher is not None:
+            await dispatcher.stop()
+            if dispatcher.router is not None:
+                await dispatcher.router.close()
         await engine.stop()
         await worker.stop()
         if app_api is not None:

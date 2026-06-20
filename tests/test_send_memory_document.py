@@ -37,9 +37,7 @@ async def test_happy_path_sends_document(store: MemoryStore) -> None:
     bot = _mock_bot(message_id=42)
     tool = SendMemoryDocumentTool(ToolContext(bot=bot, memory_store=store))
 
-    result = await tool.run(
-        SendMemoryDocumentArgs(chat_id=123, path="notes/report.md")
-    )
+    result = await tool.run(SendMemoryDocumentArgs(chat_id=123, path="notes/report.md"))
 
     assert result.is_error is False
     assert "message_id=42" in result.content
@@ -80,9 +78,7 @@ async def test_path_traversal_rejected(store: MemoryStore) -> None:
     bot = _mock_bot()
     tool = SendMemoryDocumentTool(ToolContext(bot=bot, memory_store=store))
 
-    result = await tool.run(
-        SendMemoryDocumentArgs(chat_id=1, path="../etc/passwd")
-    )
+    result = await tool.run(SendMemoryDocumentArgs(chat_id=1, path="../etc/passwd"))
 
     assert result.is_error is True
     assert "MemoryPathError" in result.content
@@ -94,9 +90,7 @@ async def test_absolute_path_rejected(store: MemoryStore) -> None:
     bot = _mock_bot()
     tool = SendMemoryDocumentTool(ToolContext(bot=bot, memory_store=store))
 
-    result = await tool.run(
-        SendMemoryDocumentArgs(chat_id=1, path="/etc/passwd")
-    )
+    result = await tool.run(SendMemoryDocumentArgs(chat_id=1, path="/etc/passwd"))
 
     assert result.is_error is True
     bot.send_document.assert_not_awaited()
@@ -107,9 +101,7 @@ async def test_missing_file_returns_error_without_upload(store: MemoryStore) -> 
     bot = _mock_bot()
     tool = SendMemoryDocumentTool(ToolContext(bot=bot, memory_store=store))
 
-    result = await tool.run(
-        SendMemoryDocumentArgs(chat_id=1, path="does/not/exist.md")
-    )
+    result = await tool.run(SendMemoryDocumentArgs(chat_id=1, path="does/not/exist.md"))
 
     assert result.is_error is True
     assert "not found" in result.content
@@ -117,11 +109,12 @@ async def test_missing_file_returns_error_without_upload(store: MemoryStore) -> 
 
 
 @pytest.mark.asyncio
-async def test_no_bot_returns_error(store: MemoryStore) -> None:
+async def test_no_bot_returns_benign(store: MemoryStore) -> None:
+    # App-only mode (no bot): a benign non-error so the engine doesn't retry.
     tool = SendMemoryDocumentTool(ToolContext(bot=None, memory_store=store))
     result = await tool.run(SendMemoryDocumentArgs(chat_id=1, path="a.md"))
-    assert result.is_error is True
-    assert "bot not configured" in result.content
+    assert result.is_error is False
+    assert "app-only" in result.content
 
 
 @pytest.mark.asyncio

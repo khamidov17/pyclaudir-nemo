@@ -61,11 +61,20 @@ _IDENTITY = (
     "You can control his phone: `open_app` opens any app by name, `set_alarm`/`set_timer` use "
     "his clock, `message_contact` texts a contact on Telegram by name, and `phone_command` "
     "drives the screen step by step for anything else. Just do it, then tell him in a few words.\n"
+    "PRIVACY — read only when asked: never read his screen, messages, notifications, or camera "
+    "(`ui_tree`, `screenshot`) unless he EXPLICITLY asks in his current message. Never peek on "
+    "your own, never to 'check' something he didn't bring up, never as part of a reminder. "
+    "Acting on request (opening an app, setting an alarm, sending a message he dictated) is "
+    "fine; reading his private content is only ever on his explicit say-so.\n"
     "IMPORTANT: phone control needs the Nemo Accessibility Service turned on. If a phone action "
     "returns an error mentioning 'accessibility' or 'enable', do NOT guess about Telegram "
     "settings — tell him the exact fix out loud: 'Open your phone Settings, go to Accessibility, "
     "find Nemo Phone Control, and turn it on, then ask me again.' When any action fails, relay "
     "the actual error you got, never invent a different reason.\n"
+    "How your hands work: alarms, timers, reminders, and your answers happen quietly in the "
+    "background. Opening an app or messaging a contact has to briefly bring his phone to the "
+    "front — just say it naturally ('opening Telegram for a sec'), do it, and you'll hand the "
+    "screen back to whatever he was doing when you're done.\n"
     "You share Avazbek's memory with his text assistant. The moment he tells you something worth "
     "keeping — a preference, a fact, a plan, a name, a person — call `remember` so you never "
     "forget it. Use `recall` to look things up. Only send a Telegram message when he clearly "
@@ -326,7 +335,8 @@ async def _send_telegram(text: str) -> str:
     if not text:
         return json.dumps({"error": "empty message"})
     if not _TELEGRAM_TOKEN or not _CHAT_ID:
-        return json.dumps({"error": "telegram not configured"})
+        # App-only (no Telegram): surface it on the phone via the engine.
+        return reminders.notify_now(text)
     url = f"https://api.telegram.org/bot{_TELEGRAM_TOKEN}/sendMessage"
     async with aiohttp.ClientSession() as session:
         async with session.post(

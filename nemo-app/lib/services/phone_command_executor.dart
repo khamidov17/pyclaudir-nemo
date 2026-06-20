@@ -205,6 +205,10 @@ class PhoneCommandExecutor {
           'Accessibility → Nemo) so I can drive Telegram');
     }
 
+    // Remember what was on screen so we can hand the phone back after sending
+    // (the user asked to message someone, not to land in Telegram).
+    final prior = await _foregroundPackage();
+
     final opened = await _intents.invokeMethod<bool>(
             'openAppByName', {'name': 'Telegram'}) !=
         null;
@@ -238,10 +242,31 @@ class PhoneCommandExecutor {
     await Future.delayed(const Duration(milliseconds: 400));
     final sent = await _click('Send') || await _click('Send message');
     if (!sent) {
+      // Leave them in Telegram so they can tap send themselves.
       return ActionOutcome.success(
           'typed the message to $name — tap send to confirm');
     }
+    await _returnTo(prior);
     return ActionOutcome.success('sent to $name on Telegram');
+  }
+
+  /// The app currently in the foreground (best-effort, via accessibility).
+  Future<String?> _foregroundPackage() async {
+    try {
+      return await _accessibility.invokeMethod<String>('getForegroundPackage');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Best-effort hand-back: re-open whatever app was in front before Nemo took
+  /// over. Never throws — if it fails the user just stays in Telegram. Skips
+  /// the hand-back when they were already in Telegram (or it's unknown).
+  Future<void> _returnTo(String? pkg) async {
+    if (pkg == null || pkg.isEmpty || pkg.contains('telegram')) return;
+    try {
+      await _intents.invokeMethod<bool>('openApp', {'package': pkg});
+    } catch (_) {}
   }
 
   Future<bool> _click(String query) async =>

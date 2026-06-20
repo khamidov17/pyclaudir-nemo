@@ -67,7 +67,8 @@ class Config:
     """All settings the bot uses at runtime."""
 
     #: The bot's API token from @BotFather. Used to log in to Telegram.
-    #: Env var: ``TELEGRAM_BOT_TOKEN`` (required).
+    #: OPTIONAL now: when empty, Nemo runs **app-only** (the phone app is the
+    #: sole interface and Telegram is disabled entirely). Env: ``TELEGRAM_BOT_TOKEN``.
     telegram_bot_token: str
     #: Telegram user ID of the bot's owner (you). Owner-only commands
     #: like ``/kill`` and ``/access`` check this. Direct-message-only
@@ -206,8 +207,11 @@ class Config:
     access_path: Path = field(init=False)
     attachments_dir: Path = field(init=False)
     renders_dir: Path = field(init=False)
+    #: True when no Telegram token is set — the phone app is the only interface.
+    app_only: bool = field(init=False)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "app_only", not self.telegram_bot_token)
         object.__setattr__(self, "db_path", self.data_dir / "pyclaudir.db")
         object.__setattr__(self, "memories_dir", self.data_dir / "memories")
         object.__setattr__(self, "session_id_path", self.data_dir / "session_id")
@@ -223,7 +227,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         return cls(
-            telegram_bot_token=_required("TELEGRAM_BOT_TOKEN"),
+            telegram_bot_token=_env("TELEGRAM_BOT_TOKEN", "") or "",
             owner_id=int(_required("PYCLAUDIR_OWNER_ID")),
             model=_required("PYCLAUDIR_MODEL"),
             effort=_required("PYCLAUDIR_EFFORT"),

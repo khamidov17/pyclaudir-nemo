@@ -48,7 +48,11 @@ class ChatMessage(BaseModel):
     #: the app only and not also echoed into the owner's Telegram DM (the
     #: app submits with ``chat_id == owner_id``, which collides with the
     #: Telegram DM). In-memory only; not persisted.
-    source: Literal["telegram", "app"] = Field(default="telegram", exclude=True)
+    #: ``"reminder"`` marks a turn fired by the scheduler (briefing/reminder),
+    #: not a live user message — used to block autonomous screen/camera reads.
+    source: Literal["telegram", "app", "reminder"] = Field(
+        default="telegram", exclude=True
+    )
 
 
 class ControlAction(BaseModel):

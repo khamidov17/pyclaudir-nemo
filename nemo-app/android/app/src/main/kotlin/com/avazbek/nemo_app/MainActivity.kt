@@ -70,6 +70,8 @@ class MainActivity : FlutterActivity() {
                         result.success(NemoAccessibilityService.pressButton(button))
                     }
                     "getUiTree" -> result.success(NemoAccessibilityService.getUiTree())
+                    "getForegroundPackage" ->
+                        result.success(NemoAccessibilityService.getForegroundPackage())
                     "clickByText" -> {
                         val query = call.argument<String>("query") ?: ""
                         result.success(NemoAccessibilityService.clickByText(query))

@@ -187,6 +187,32 @@ def _set(args: dict) -> str:
     )
 
 
+def notify_now(text: str) -> str:
+    """Surface `text` on the phone now (app-only path for "notify/text me").
+
+    The voice server can't reach the app's WebSocket directly (the engine owns
+    it), so insert an immediate reminder — the engine's loop picks it up within
+    a minute and delivers it to the phone (shown + spoken via Edge TTS).
+    """
+    text = (text or "").strip()
+    if not text or not _CHAT_ID:
+        return json.dumps({"error": "nothing to send"})
+    owner = int(_CHAT_ID)
+    now = _now_utc().strftime(_FMT)
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO reminders "
+            "(chat_id, user_id, text, trigger_at, cron_expr, status, created_at) "
+            "VALUES (?, ?, ?, ?, NULL, 'pending', ?)",
+            (owner, owner, text, now, now),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return json.dumps({"status": "sent"})
+
+
 def _list() -> str:
     con = _connect()
     try:

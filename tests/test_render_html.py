@@ -71,7 +71,9 @@ async def test_render_html_happy_path_mocked(
 ) -> None:
     captured: dict = {}
 
-    async def _fake_render(html: str, width: int, height: int, out_path: Path, **_kw) -> None:
+    async def _fake_render(
+        html: str, width: int, height: int, out_path: Path, **_kw
+    ) -> None:
         captured["html"] = html
         captured["width"] = width
         captured["height"] = height
@@ -216,10 +218,11 @@ async def test_send_photo_missing_file(store: RenderStore) -> None:
 
 @pytest.mark.asyncio
 async def test_send_photo_no_bot(store: RenderStore) -> None:
+    # App-only mode (no bot): a benign non-error so the engine doesn't retry.
     tool = SendPhotoTool(ToolContext(bot=None, render_store=store))
     result = await tool.run(SendPhotoArgs(chat_id=1, path="x.png"))
-    assert result.is_error is True
-    assert "bot not configured" in result.content
+    assert result.is_error is False
+    assert "app-only" in result.content
 
 
 @pytest.mark.asyncio
@@ -252,12 +255,14 @@ async def test_close_browser_force_kills_on_hang() -> None:
 
     class FakeBrowser:
         process = FakeProc()
+
         def close(self):  # returns a coroutine; bound by wait_for
             return _hang()
 
     # Patch the close timeout down so the test runs fast.
     monkeypatched = 0.05
     import pyclaudir.tools.render_html as m
+
     orig = m._CLOSE_TIMEOUT_S
     m._CLOSE_TIMEOUT_S = monkeypatched
     try:
@@ -280,6 +285,7 @@ async def test_close_browser_force_kills_on_exception() -> None:
 
     class FakeBrowser:
         process = FakeProc()
+
         async def close(self) -> None:
             raise RuntimeError("connection closed")
 
@@ -298,6 +304,7 @@ async def test_close_browser_handles_kill_failure_silently() -> None:
 
     class FakeBrowser:
         process = FakeProc()
+
         async def close(self) -> None:
             raise RuntimeError("dead")
 
@@ -322,8 +329,12 @@ async def test_render_to_png_wall_clock_enforces_budget(
 
     class _PW:
         chromium = _Ch()
-        async def __aenter__(self): return self
-        async def __aexit__(self, *_a): return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return None
 
     monkeypatch.setattr(pw, "async_playwright", lambda: _PW())
     monkeypatch.setattr(m, "_WALL_CLOCK_S", 0.1)

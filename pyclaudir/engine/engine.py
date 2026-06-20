@@ -281,11 +281,18 @@ class Engine:
 
     def _mark_app_origin(self, batch: list[ChatMessage]) -> None:
         """Flag chats whose turn came from the mobile app so ``send_message``
-        won't echo the reply into Telegram. Overwritten every turn."""
+        won't echo the reply into Telegram, and mark whether this turn was
+        started by a live user (vs the scheduler). Overwritten every turn."""
         if self._ctx is not None:
             self._ctx.app_origin_chats = {
                 m.chat_id for m in batch if getattr(m, "source", "telegram") == "app"
             }
+            # A turn is user-initiated unless EVERY message in it is a
+            # scheduler-fired reminder. Read actions (screen/camera) check this
+            # so a briefing can never silently capture the phone.
+            self._ctx.user_initiated = any(
+                getattr(m, "source", "telegram") != "reminder" for m in batch
+            )
 
     async def _build_turn_prompt(self, batch: list[ChatMessage]) -> str:
         """Render the turn XML, prepending any compaction-restore block."""
