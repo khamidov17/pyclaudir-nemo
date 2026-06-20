@@ -19,7 +19,10 @@ class WakeWordService extends ChangeNotifier {
   // Placeholder wake model (assets/hey_jarvis_v0.1.onnx). Swap to the trained
   // hey_nemo.onnx once available — only this constant changes.
   static const _model = 'hey_jarvis_v0.1.onnx';
-  static const _threshold = 0.5;
+  // The placeholder "hey jarvis" model peaks ~0.39 for this device/voice (the
+  // custom "hey nemo" model will score higher). 0.3 sits comfortably between
+  // that peak and the ~0.03 quiet floor, so it fires without false-triggering.
+  static const _threshold = 0.3;
 
   bool _running = false;
   DateTime _lastFire = DateTime.fromMillisecondsSinceEpoch(0);
