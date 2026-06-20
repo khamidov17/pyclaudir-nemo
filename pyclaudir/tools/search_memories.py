@@ -8,6 +8,7 @@ import re
 
 from pydantic import BaseModel, Field
 
+from .. import semantic_memory
 from .base import BaseTool, ToolResult
 
 _log = logging.getLogger(__name__)
@@ -17,17 +18,23 @@ _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 
 
 class SearchMemoriesArgs(BaseModel):
-    query: str = Field(description="Search term (case-insensitive substring or regex).")
-    use_regex: bool = Field(default=False, description="Treat query as a regex pattern.")
+    query: str = Field(description="Search term (or natural-language question).")
+    use_regex: bool = Field(
+        default=False, description="Treat query as a regex pattern (keyword mode only)."
+    )
+    semantic: bool = Field(
+        default=True,
+        description="Also rank memories by MEANING (finds 'dark roast' for 'coffee').",
+    )
     max_results: int = Field(default=_MAX_RESULTS, ge=1, le=200)
 
 
 class SearchMemoriesTool(BaseTool):
     name = "search_memories"
     description = (
-        "Search all memory files for a keyword or regex. Returns matching lines with "
-        "surrounding context. Automatically resolves [[wikilinks]] found in matches — "
-        "if a match references [[people/rustam]], a snippet from that file is included."
+        "Search memory by meaning AND keyword. Semantic ranking finds relevant "
+        "facts even with no shared words ('what does he drive?' → 'has a Tesla'); "
+        "keyword/regex catches exact terms. Resolves [[wikilinks]] in matches."
     )
     args_model = SearchMemoriesArgs
 
@@ -48,30 +55,47 @@ class SearchMemoriesTool(BaseTool):
         results = await asyncio.to_thread(
             _search_files, store, pattern, args.max_results
         )
+        sem = await _semantic(args.query) if args.semantic else []
 
-        if not results:
+        if not results and not sem:
             return ToolResult(content=f"No matches for {args.query!r}")
 
-        # Resolve wikilinks found in any match context
-        linked = await asyncio.to_thread(_resolve_wikilinks, store, results)
+        linked = (
+            await asyncio.to_thread(_resolve_wikilinks, store, results)
+            if results
+            else {}
+        )
+        content = _render(args.query, sem, results, linked)
+        return ToolResult(
+            content=content,
+            data={"semantic": sem, "matches": results, "linked": linked},
+        )
 
-        lines = [f"Found {len(results)} match(es) for {args.query!r}:\n"]
+
+async def _semantic(query: str) -> list[dict]:
+    """Meaning-ranked memory matches, or [] if embeddings are unavailable."""
+    if not semantic_memory.available():
+        return []
+    return await asyncio.to_thread(semantic_memory.search, query, 8)
+
+
+def _render(query: str, sem: list[dict], results: list[dict], linked: dict) -> str:
+    lines: list[str] = []
+    if sem:
+        lines.append(f"Most relevant to {query!r} (by meaning):")
+        lines.extend(f"- {m['text']}  ({m['ref']})" for m in sem)
+        lines.append("")
+    if results:
+        lines.append(f"Keyword matches ({len(results)}):")
         for match in results:
             lines.append(f"### {match['file']}")
             lines.append(match["context"])
             lines.append("")
-
-        if linked:
-            lines.append("### Linked files (via wikilinks)")
-            for path, snippet in linked.items():
-                lines.append(f"**[[{path}]]**")
-                lines.append(snippet)
-                lines.append("")
-
-        return ToolResult(
-            content="\n".join(lines),
-            data={"matches": results, "linked": linked},
-        )
+    if linked:
+        lines.append("### Linked files (via wikilinks)")
+        for path, snippet in linked.items():
+            lines.append(f"**[[{path}]]**\n{snippet}\n")
+    return "\n".join(lines)
 
 
 def _search_files(store, pattern: re.Pattern, max_results: int) -> list[dict]:
