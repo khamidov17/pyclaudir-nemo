@@ -175,9 +175,10 @@ class _QwenPump:
     # If audio has been flowing but neither more audio nor response.done arrives
     # for this long, treat the turn as finished — covers a lost/late
     # response.done on the flaky link so the app's mic isn't stuck muted. Kept
-    # generous (4s) so a normal packet gap mid-reply on the lossy link doesn't
-    # falsely end the turn and reopen the mic while Nemo is still speaking.
-    _TURN_IDLE_SEC = 4.0
+    # generous (6s) so a normal packet gap mid-reply on the lossy link doesn't
+    # falsely end the turn and reopen the mic while Nemo is still speaking
+    # (response.done loss is rare, so erring long is safe).
+    _TURN_IDLE_SEC = 6.0
 
     def __init__(self, qwen, client_ws, bridge) -> None:
         self.qwen = qwen

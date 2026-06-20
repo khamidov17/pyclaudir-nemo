@@ -36,6 +36,7 @@ class VoiceChatService extends ChangeNotifier {
   // conversation context on the new session, so the talk resumes seamlessly.
   String? _host;
   bool _userStopping = false;
+  bool _reconnecting = false;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
   static const _maxReconnects = 6;
@@ -187,26 +188,27 @@ class VoiceChatService extends ChangeNotifier {
     // into the new session.
     await _wsSub?.cancel();
     _wsSub = null;
+    // Read the auth payload + TLS client UP FRONT, so there are NO awaits after
+    // the socket is assigned to _ws — that closes the window where a stop()
+    // mid-setup could leave a half-wired zombie connection alive.
+    final token = await _storage.read(key: 'app_token') ?? '';
+    final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
+    final deviceId = await _deviceId();
+    final client = await SecureNet.httpClient();
+    if (_userStopping) return false;
     final IOWebSocketChannel ch;
     try {
-      ch = IOWebSocketChannel.connect(
-        uri,
-        customClient: await SecureNet.httpClient(),
-      );
+      ch = IOWebSocketChannel.connect(uri, customClient: client);
       await ch.ready.timeout(const Duration(seconds: 8));
     } catch (e) {
       return false;
     }
-    // If the user stopped while we were connecting, abandon this socket — never
-    // leave a zombie connection alive after stop().
     if (_userStopping) {
       ch.sink.close(ws_status.goingAway);
       return false;
     }
+    // No awaits past here — wire up synchronously.
     _ws = ch;
-    final token = await _storage.read(key: 'app_token') ?? '';
-    final voice = await _storage.read(key: 'nemo_voice') ?? 'Ethan';
-    final deviceId = await _deviceId();
     ch.sink.add(jsonEncode({
       'type': 'auth',
       'token': token,
@@ -226,6 +228,14 @@ class VoiceChatService extends ChangeNotifier {
   void _onDrop() {
     if (_userStopping || !_active) return;
     _ws = null;
+    _scheduleReconnect();
+  }
+
+  /// Schedule one reconnect attempt. Guarded so overlapping drops can't spawn
+  /// concurrent reconnects (at most one timer + one in-flight attempt).
+  void _scheduleReconnect() {
+    if (_userStopping || !_active) return;
+    if (_reconnecting || (_reconnectTimer?.isActive ?? false)) return;
     if (_reconnectAttempts >= _maxReconnects) {
       _errors.add('Voice connection lost — tap to reconnect.');
       stop();
@@ -234,14 +244,18 @@ class VoiceChatService extends ChangeNotifier {
     _controls.add('reconnecting');
     final delayMs = (500 * (1 << _reconnectAttempts)).clamp(500, 8000);
     _reconnectAttempts++;
-    _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(milliseconds: delayMs), _reconnect);
   }
 
   Future<void> _reconnect() async {
     if (_userStopping || !_active || _host == null) return;
-    final ok = await _openSocket(_voiceUri(_host!));
-    // Re-check after the await: a stop() during reconnect must win.
+    _reconnecting = true;
+    bool ok = false;
+    try {
+      ok = await _openSocket(_voiceUri(_host!));
+    } finally {
+      _reconnecting = false;
+    }
     if (_userStopping || !_active) return;
     if (ok) {
       _reconnectAttempts = 0;
@@ -249,7 +263,7 @@ class VoiceChatService extends ChangeNotifier {
       _muteWatchdog?.cancel();
       _controls.add('reconnected');
     } else {
-      _onDrop();
+      _scheduleReconnect();
     }
   }
 
@@ -312,6 +326,7 @@ class VoiceChatService extends ChangeNotifier {
   Future<void> stop() async {
     _active = false;
     _userStopping = true;
+    _reconnecting = false;
     _reconnectTimer?.cancel();
     _reconnectAttempts = 0;
     await _recorderSub?.cancel();
