@@ -18,6 +18,7 @@ from pathlib import Path
 
 import aiohttp
 
+import memory_index
 import phone_tools
 import reminders
 import voice_history
@@ -277,21 +278,32 @@ def _remember(note: str) -> str:
 
 
 def _recall(query: str) -> str:
-    q = (query or "").lower().strip()
+    q = (query or "").strip()
+    if not q:
+        return json.dumps({"results": []})
+    # Prefer semantic recall (by meaning) when embeddings are configured — it
+    # finds "I like dark roast" for "what coffee do I drink". Fall back to plain
+    # keyword search if it's unavailable or finds nothing.
+    if memory_index.available():
+        hits = memory_index.search(q, limit=8)
+        if hits:
+            return json.dumps({"results": hits})
+    return json.dumps({"results": _keyword_recall(q.lower())[:10]})
+
+
+def _keyword_recall(q: str) -> list[str]:
+    """Substring search over memory files + the verbatim voice journal."""
     hits: list[str] = []
-    if q and _MEM_DIR.is_dir():
+    if _MEM_DIR.is_dir():
         for f in sorted(_MEM_DIR.glob("**/*.md")):
             try:
                 lines = f.read_text().splitlines()
             except OSError:
                 continue
-            # Cap each hit like _search_chat does — one runaway line in a
-            # memory file shouldn't bloat the tool result (tokens cost money).
+            # Cap each hit so one runaway line can't bloat the tool result.
             hits.extend(ln.strip()[:200] for ln in lines if q in ln.lower())
-    # Also search the verbatim voice journal so Nemo can recall anything ever
-    # said out loud, not just saved facts.
     hits.extend(voice_history.search(q, limit=6))
-    return json.dumps({"results": hits[:10]})
+    return hits
 
 
 def _search_chat(query: str, limit: int = 6) -> str:
