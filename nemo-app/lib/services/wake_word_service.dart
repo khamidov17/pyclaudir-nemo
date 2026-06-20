@@ -1,31 +1,27 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:vosk_flutter_2/vosk_flutter_2.dart';
 
-/// On-device wake word via Vosk — fully offline, NO API key, and crucially NO
-/// Android SpeechRecognizer "ding" (Vosk captures raw audio itself, so it never
-/// grabs system audio focus or plays the recognizer chime that muted music /
-/// Instagram before).
+/// On-device wake word via native **openWakeWord** (ONNX keyword spotter).
 ///
-/// The small English model (~40MB) is downloaded once on first enable and then
-/// cached on device. Recognition is grammar-constrained to the wake phrases for
-/// accuracy and low CPU. Everything is wrapped defensively: if Vosk ever fails
-/// (no network on first download, model error), wake word simply stays off —
-/// the rest of the app is unaffected.
+/// Replaces the old Vosk STT: openWakeWord is a tiny purpose-built model (like
+/// "Hey Siri"), far more accurate on the wake phrase and much lighter — and
+/// fully offline, with NO network and NO vendor key (works in China). The
+/// native engine (WakeWordController.kt) captures the mic itself and reports
+/// detections; this service just arms/disarms it and debounces.
+///
+/// Public interface is unchanged so VoiceSessionController et al. don't change.
+/// Ships with a placeholder model until a custom "hey nemo" model is trained
+/// (openWakeWord + Colab) and dropped into assets.
 class WakeWordService extends ChangeNotifier {
-  static const _modelUrl =
-      'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip';
-  static const _triggers = ['nemo', 'hey nemo', 'ok nemo', 'yo nemo'];
-  // Constrain recognition to the wake phrases (+ [unk] for everything else).
-  static const _grammar = ['hey nemo', 'ok nemo', 'yo nemo', 'nemo', '[unk]'];
+  static const _channel = MethodChannel('com.avazbek.nemo_app/wakeword');
+  // Placeholder wake model (assets/hey_jarvis_v0.1.onnx). Swap to the trained
+  // hey_nemo.onnx once available — only this constant changes.
+  static const _model = 'hey_jarvis_v0.1.onnx';
+  static const _threshold = 0.5;
 
-  final _vosk = VoskFlutterPlugin.instance();
-  SpeechService? _speech;
-  StreamSubscription? _partialSub;
   bool _running = false;
-  bool _loading = false;
   DateTime _lastFire = DateTime.fromMillisecondsSinceEpoch(0);
   VoidCallback? onWakeWord;
   bool get isActive => _running;
@@ -34,36 +30,29 @@ class WakeWordService extends ChangeNotifier {
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
-  /// Wake word is OFF by default (opt in from Settings). Unlike the old engine
-  /// it no longer dings, but it still streams the mic, so keep it user-choice.
+  WakeWordService() {
+    _channel.setMethodCallHandler(_onNative);
+  }
+
+  /// Wake word is OFF by default (opt in from Settings).
   static Future<bool> isEnabled() async =>
       (await _store.read(key: 'wake_word_enabled')) == 'true';
 
   static Future<void> setEnabled(bool on) async =>
       _store.write(key: 'wake_word_enabled', value: on ? 'true' : 'false');
 
-  /// Cheap — the heavy model load is deferred to the first [start] so a user
-  /// who never enables wake word never downloads the model.
+  /// No-op: the native engine loads its ONNX models lazily on first start().
   Future<void> init() async {}
 
-  Future<void> _ensureSpeech() async {
-    if (_speech != null || _loading) return;
-    _loading = true;
-    try {
-      final modelPath = await ModelLoader().loadFromNetwork(_modelUrl);
-      final model = await _vosk.createModel(modelPath);
-      final recognizer = await _vosk.createRecognizer(
-        model: model,
-        sampleRate: 16000,
-        grammar: _grammar,
-      );
-      _speech = await _vosk.initSpeechService(recognizer);
-      _partialSub = _speech!.onPartial().listen(_onPartial);
-    } catch (e) {
-      debugPrint('WakeWord vosk init failed (wake word stays off): $e');
-    } finally {
-      _loading = false;
-    }
+  Future<dynamic> _onNative(MethodCall call) async {
+    if (call.method != 'onWakeWord') return;
+    // Debounce so one utterance fires once (the engine has its own cooldown
+    // too, but a short guard here is cheap insurance).
+    final now = DateTime.now();
+    if (now.difference(_lastFire) < const Duration(seconds: 3)) return;
+    _lastFire = now;
+    debugPrint('Wake word detected (score=${call.arguments})');
+    onWakeWord?.call();
   }
 
   Future<void> start() async {
@@ -72,55 +61,32 @@ class WakeWordService extends ChangeNotifier {
       debugPrint('WakeWordService: disabled (opt in via Settings)');
       return;
     }
-    await _ensureSpeech();
-    if (_speech == null) return;
-    // Re-arming right after a voice session: Android may not have released the
-    // mic to us yet, so the first grab can fail. Retry once after a short wait
-    // before giving up — otherwise "hey nemo" silently dies until app restart.
-    for (var attempt = 0; attempt < 2; attempt++) {
-      try {
-        await _speech!.start();
-        _running = true;
-        notifyListeners();
-        debugPrint('WakeWordService: listening (vosk, no ding)');
-        return;
-      } catch (e) {
-        debugPrint('WakeWord start failed (attempt ${attempt + 1}): $e');
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
+    try {
+      await _channel.invokeMethod('start', {
+        'model': _model,
+        'threshold': _threshold,
+      });
+      _running = true;
+      notifyListeners();
+      debugPrint('WakeWordService: listening (openWakeWord)');
+    } catch (e) {
+      debugPrint('WakeWord start failed: $e');
     }
   }
 
   Future<void> stop() async {
     _running = false;
     try {
-      await _speech?.stop();
+      await _channel.invokeMethod('stop');
     } catch (_) {}
     notifyListeners();
     debugPrint('WakeWordService: stopped');
   }
 
-  void _onPartial(String json) {
-    String text;
-    try {
-      text = (jsonDecode(json)['partial'] as String? ?? '').toLowerCase();
-    } catch (_) {
-      return;
-    }
-    if (text.isEmpty || !_triggers.any(text.contains)) return;
-    // Debounce so a single utterance only fires once.
-    final now = DateTime.now();
-    if (now.difference(_lastFire) < const Duration(seconds: 4)) return;
-    _lastFire = now;
-    debugPrint('Wake word detected: "$text"');
-    onWakeWord?.call();
-  }
-
   @override
   void dispose() {
     _running = false;
-    _partialSub?.cancel();
-    _speech?.stop();
+    _channel.invokeMethod('stop');
     super.dispose();
   }
 }

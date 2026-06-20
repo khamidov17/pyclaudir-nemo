@@ -29,8 +29,11 @@ class MainActivity : FlutterActivity() {
         const val CH_SCREENSHOT = "com.avazbek.nemo_app/screenshot"
         const val CH_NOTIFICATION = "com.avazbek.nemo_app/notification"
         const val CH_VOICE = "com.avazbek.nemo_app/voice_player"
+        const val CH_WAKEWORD = "com.avazbek.nemo_app/wakeword"
         const val SCREENSHOT_REQUEST = 1001
     }
+
+    private var wakeWord: WakeWordController? = null
 
     // MediaProjection state
     private var mediaProjection: MediaProjection? = null
@@ -135,6 +138,28 @@ class MainActivity : FlutterActivity() {
         voicePlayer.onUnderrun = { count ->
             runOnUiThread { voiceCh.invokeMethod("underrun", count) }
         }
+
+        // ── Wake word channel (openWakeWord, on-device) ────────────────
+        val wakeCh = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_WAKEWORD)
+        val wake = WakeWordController(applicationContext, wakeCh) { r -> runOnUiThread(r) }
+        wakeWord = wake
+        wakeCh.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    val model = call.argument<String>("model") ?: "hey_jarvis_v0.1.onnx"
+                    val threshold = (call.argument<Double>("threshold") ?: 0.5).toFloat()
+                    wake.start(model, threshold)
+                    result.success(true)
+                }
+                "stop" -> { wake.stop(); result.success(true) }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        wakeWord?.stop()
+        super.onDestroy()
     }
 
     // ── MediaProjection Screenshot ─────────────────────────────────────
