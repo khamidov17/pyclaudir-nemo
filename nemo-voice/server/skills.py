@@ -73,6 +73,9 @@ def _load_skills() -> dict[str, dict]:
             "params": params,
             "argv": argv,
             "timeout": _as_int(fm.get("timeout"), _DEFAULT_TIMEOUT),
+            # The skill's own folder — auto-substituted as {skill_dir} so a skill
+            # can invoke a helper script next to its SKILL.md, cwd-independent.
+            "dir": str(md.parent),
         }
         LOG.info("loaded skill: %s", name)
     return out
@@ -111,9 +114,9 @@ def _to_function(skill: dict) -> dict:
 FUNCTIONS: list[dict] = [_to_function(s) for s in _SKILLS.values()]
 
 
-def _substitute(arg: str, args: dict, params: list[str]) -> str:
-    for p in params:
-        arg = arg.replace("{" + p + "}", str(args.get(p, ""))[:_MAX_PARAM])
+def _substitute(arg: str, values: dict) -> str:
+    for k, v in values.items():
+        arg = arg.replace("{" + k + "}", str(v)[:_MAX_PARAM])
     return arg
 
 
@@ -122,7 +125,11 @@ def dispatch(name: str, args: dict) -> str:
     skill = _SKILLS.get(name)
     if skill is None:
         return json.dumps({"error": f"unknown skill {name}"})
-    argv = [_substitute(a, args, skill["params"]) for a in skill["argv"]]
+    # Param values (from the voice agent) substitute as DATA into fixed argv
+    # slots; {skill_dir} is operator-trusted. shell=False → no injection.
+    values = {p: args.get(p, "") for p in skill["params"]}
+    values["skill_dir"] = skill["dir"]
+    argv = [_substitute(a, values) for a in skill["argv"]]
     try:
         proc = subprocess.run(
             argv,
