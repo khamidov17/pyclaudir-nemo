@@ -73,5 +73,9 @@ class ActionBridge:
                 "ok": bool(msg.get("ok")),
                 "text": msg.get("text"),
                 "error": msg.get("error"),
+                # Vision (`look`) needs the captured frame; the app sends it as
+                # image_b64 (snake) or imageB64 (camel). Dropping it here was why
+                # every look returned "couldn't capture an image".
+                "image_b64": msg.get("image_b64") or msg.get("imageB64"),
             }
         )

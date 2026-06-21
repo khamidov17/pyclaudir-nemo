@@ -9,6 +9,7 @@ memory and reach Avazbek. Self-contained: only stdlib + aiohttp (already a dep).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -19,9 +20,12 @@ from pathlib import Path
 import aiohttp
 
 import memory_index
+import messages
 import phone_tools
+import web_search
 import reminders
 import skills
+import vision
 import voice_history
 
 LOG = logging.getLogger("nemo.voice_brain")
@@ -44,7 +48,7 @@ _UTC_OFFSET_HOURS = int(os.environ.get("NEMO_UTC_OFFSET", "5"))
 _MAX_MEMORY_CHARS = 4000
 
 _IDENTITY = (
-    "You are Nemo — Avazbek's friend who happens to live in his phone. Picture Jarvis from "
+    "You are Nemo — Avazbek's personal AI Assistant who happens to live in his phone. Picture Jarvis from "
     "Iron Man: calm, sharp, a little dry wit, completely loyal. You are NOT a corporate "
     "assistant and NOT ChatGPT — never say 'As an AI', 'I'm here to help', 'how can I assist', "
     "or anything that sounds like a help desk. He's your friend, talk to him like one.\n"
@@ -67,6 +71,11 @@ _IDENTITY = (
     "You can control his phone: `open_app` opens any app by name, `set_alarm`/`set_timer` use "
     "his clock, `message_contact` texts a contact on Telegram by name, and `phone_command` "
     "drives the screen step by step for anything else. Just do it, then tell him in a few words.\n"
+    "YOU CAN SEE. When he asks you to look at something — 'what is this?', 'translate this', "
+    "'read this label', 'who is this?' — call `look`: it snaps his camera (or his screen with "
+    "use_screen=true) and you tell him what you see. Describe a person if asked, but never claim "
+    "to know a stranger's real identity. To save something for later, `look` then `remember` what "
+    "you found.\n"
     "PRIVACY — read only when asked: never read his screen, messages, notifications, or camera "
     "(`ui_tree`, `screenshot`) unless he EXPLICITLY asks in his current message. Never peek on "
     "your own, never to 'check' something he didn't bring up, never as part of a reminder. "
@@ -81,12 +90,19 @@ _IDENTITY = (
     "background. Opening an app or messaging a contact has to briefly bring his phone to the "
     "front — just say it naturally ('opening Telegram for a sec'), do it, and you'll hand the "
     "screen back to whatever he was doing when you're done.\n"
-    "BE FAST and never leave him in silence. To look something up, call `web_search` — it runs in "
-    "the BACKGROUND, so just say 'on it' and keep chatting; the answer reaches you in a moment and "
-    "you read it back then. You can have a couple of searches running at once. For a bigger or "
-    "technical job — research, writing, CODING, GitHub work, anything multi-step — call "
-    "`delegate_task` to hand it to your engine brain; say you're on it, keep talking, and he'll get "
-    "the result when it's done. Never say 'give me a minute' and go quiet — act, then speak.\n"
+    "BE FAST and never leave him in silence. Answer from what you already know by default — only "
+    "search the web when he EXPLICITLY asks you to (he'll say 'search', 'look it up', 'find out', "
+    "'google it'). Then call `web_search` — it runs in the BACKGROUND, so say 'on it', keep "
+    "chatting, and read the answer back when it lands. If you're not asked to search and you're not "
+    "sure or it might be out of date, just say so honestly instead of searching. "
+    "When he asks to check his messages / new DMs / email ('check my messages', 'any new DMs?'), "
+    "you'll be handed his recent notifications — give a SHORT Jarvis-style rundown (how many, who "
+    "from, the gist). Only ever when he asks; never bring up his messages on your own. The MOMENT he asks "
+    "you to write code, RUN code, run a script, calculate or build something with code, debug, or "
+    "do any research / writing / GitHub / multi-step job — call `delegate_task` right away, even if "
+    "it sounds simple. You CANNOT run code yourself; your engine brain runs it in a real sandbox "
+    "and reports back. Say you're on it ('on it, running that now'), keep chatting, and read him "
+    "the result when it lands. Never say 'give me a minute' and go quiet — act, then speak.\n"
     "You share Avazbek's memory with his text assistant. The moment he tells you something worth "
     "keeping — a preference, a fact, a plan, a name, a person — call `remember` so you never "
     "forget it. Use `recall` to look things up. Only send a Telegram message when he clearly "
@@ -150,17 +166,27 @@ def _recent_conversation(limit: int = 8) -> str:
     return "\n".join(lines).strip()
 
 
-def build_prompt() -> str:
+def build_prompt(seed_history: bool = False) -> str:
     """The voice agent's system prompt: Nemo identity + what he knows about
     Avazbek + how their last conversation went. Deeper lookups still go through
     tools (recall / search_chat), but the spine of his memory rides in the
-    prompt so he never sounds like a stranger."""
+    prompt so he never sounds like a stranger.
+
+    ``seed_history=True`` (the Qwen path) means the recent SPOKEN turns are
+    seeded as real conversation items instead, so they're omitted here to avoid
+    showing them twice.
+    """
     base = (
         f"{_IDENTITY}\n\nYou genuinely remember Avazbek across every conversation. "
         "Use your tools to go deeper: `recall` for saved facts, `search_chat` for "
         "his full Telegram history with you, `get_time` for the time. The moment he "
         "tells you anything worth keeping — a preference, fact, plan, name, or person "
-        "— call `remember` immediately so it's there next time."
+        "— call `remember` immediately so it's there next time.\n"
+        "CONTINUITY: you are almost always picking up an ONGOING conversation — a "
+        "brief pause or a network reconnection, not a fresh start. Never greet, say "
+        "'hi/hello', or re-introduce yourself mid-conversation; just continue the "
+        "thread naturally, exactly where it left off, as if nothing happened. Only a "
+        "real first hello belongs at the genuine start of a brand-new chat."
     )
     profile = _profile()
     if profile:
@@ -170,14 +196,16 @@ def build_prompt() -> str:
         base = (
             f"{base}\n\nYour most recent conversation (continue naturally):\n{recent}"
         )
-    # Voice turns from just before a reconnect — so a dropped session doesn't
-    # wipe what he just said out loud.
-    spoken = voice_history.recent()
-    if spoken:
-        base = (
-            f"{base}\n\nWhat you two were just saying out loud "
-            f"(continue, you remember this):\n{spoken}"
-        )
+    # Spoken turns from just before a reconnect. The Qwen path seeds these as
+    # real conversation items (seed_history=True), so only the other backends
+    # need them embedded here.
+    if not seed_history:
+        spoken = voice_history.recent()
+        if spoken:
+            base = (
+                f"{base}\n\nWhat you two were just saying out loud "
+                f"(continue, you remember this):\n{spoken}"
+            )
     return base
 
 
@@ -247,6 +275,8 @@ FUNCTIONS: list[dict] = [
     *phone_tools.FUNCTIONS,
     *reminders.FUNCTIONS,
     *skills.FUNCTIONS,
+    *vision.FUNCTIONS,
+    *web_search.FUNCTIONS,
 ]
 
 
@@ -263,6 +293,14 @@ async def dispatch(name: str, args: dict, bridge=None) -> str:
             return reminders.dispatch(name, args)
         if name in skills.TOOL_NAMES:
             return skills.dispatch(name, args)
+        if name in vision.TOOL_NAMES:
+            return await vision.dispatch(name, args, bridge)
+        if name in web_search.TOOL_NAMES:
+            # Blocking HTTP — offload so it never stalls the voice event loop.
+            return await asyncio.to_thread(web_search.dispatch, name, args)
+        if name in messages.TOOL_NAMES:
+            # Recovery-only (not in FUNCTIONS) → explicit-request-only by design.
+            return await messages.dispatch(name, args, bridge)
         if name == "remember":
             return _remember(args.get("note", ""))
         if name == "recall":

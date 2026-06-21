@@ -20,6 +20,7 @@ import math
 import os
 import sqlite3
 import struct
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,6 +100,11 @@ def _embed(texts: list[str]) -> list[list[float]] | None:
 
 def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(_INDEX_DB), timeout=5.0)
+    # WAL lets the engine and the voice process read/write this shared index
+    # concurrently instead of blocking each other ("database is locked"). WAL is
+    # persistent at the file level; busy_timeout waits out a transient writer.
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     con.execute(
         "CREATE TABLE IF NOT EXISTS chunks "
         "(id TEXT PRIMARY KEY, source TEXT, ref TEXT, text TEXT, "
@@ -163,6 +169,24 @@ def _journal_chunks() -> list[tuple[str, str, str]]:
     return out
 
 
+# reindex() writes (DELETE + INSERT) — during a live conversation new journal
+# turns make every recall a writer, and the engine writes the same index, so
+# back-to-back recalls collide ("database is locked"). Throttle: reindex at most
+# this often; recall tolerates seconds of staleness (recent context comes from
+# the rolling history, not semantic search).
+_REINDEX_MIN_SEC = float(os.environ.get("NEMO_REINDEX_MIN_SEC", "45"))
+_last_reindex = 0.0
+
+
+def _maybe_reindex() -> None:
+    global _last_reindex
+    now = time.monotonic()
+    if now - _last_reindex < _REINDEX_MIN_SEC:
+        return
+    _last_reindex = now
+    reindex()
+
+
 def reindex() -> int:
     """Embed chunks new since last run + prune stale ones. Returns # embedded."""
     if not available():
@@ -221,7 +245,7 @@ def search(query: str, limit: int = 6) -> list[str]:
     q = (query or "").strip()
     if not q or not available():
         return []
-    reindex()
+    _maybe_reindex()
     qv = _embed([q])
     if not qv:
         return []

@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from pathlib import Path
 
 LOG = logging.getLogger("nemo.voice_history")
@@ -46,7 +47,7 @@ def add(role: str, text: str) -> None:
     if not text:
         return
     items = _load_recent()
-    items.append({"role": role, "text": text[:300]})
+    items.append({"role": role, "text": text[:300], "ts": time.time()})
     items = items[-_MAX_TURNS:]
     try:
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,6 +86,22 @@ def recent(limit: int = 18) -> str:
         f"{'Avazbek' if it.get('role') == 'user' else 'Nemo'}: {it.get('text', '')}"
         for it in items
     ).strip()
+
+
+def recent_items(max_age_sec: float = 900.0, limit: int = 18) -> list[dict]:
+    """Recent turns as structured {role, text} — for SEEDING a reconnected
+    session as real conversation history (genuine momentum, not a described
+    transcript). Returns [] if the last turn is older than max_age_sec: that's a
+    fresh conversation, not a reconnect, so Nemo shouldn't 'continue' a stale one.
+    """
+    items = _load_recent()
+    if not items:
+        return []
+    now = time.time()
+    if now - items[-1].get("ts", 0) > max_age_sec:
+        return []  # stale → treat as a brand-new conversation
+    fresh = [it for it in items if now - it.get("ts", 0) <= max_age_sec]
+    return [{"role": it["role"], "text": it.get("text", "")} for it in fresh[-limit:]]
 
 
 def search(query: str, limit: int = 8) -> list[str]:

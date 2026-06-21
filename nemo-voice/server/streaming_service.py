@@ -15,6 +15,7 @@ import websockets
 
 import voice_brain
 from action_bridge import ActionBridge
+from voice_metrics import METRICS
 
 
 ROOT_ENV = Path(__file__).resolve().parents[2] / ".env"
@@ -458,6 +459,7 @@ async def _handle_client(client_ws):
 
 
 async def _ws_handler(websocket):
+    METRICS.session_start()
     try:
         await _handle_client(websocket)
     except websockets.exceptions.ConnectionClosed:
@@ -468,6 +470,8 @@ async def _ws_handler(websocket):
             await websocket.send(json.dumps({"type": "error", "message": str(exc)}))
         except Exception:
             pass
+    finally:
+        METRICS.session_end()
 
 
 async def _serve_client_http(ssl_ctx=None):
@@ -495,8 +499,13 @@ async def _serve_client_http(ssl_ctx=None):
             else "text/plain",
         )
 
+    async def health(_request):
+        return web.json_response({**METRICS.snapshot(), "backend": VOICE_BACKEND})
+
     app = web.Application()
     app.router.add_get("/", index)
+    # /health must precede the /{filename} catch-all (aiohttp matches in order).
+    app.router.add_get("/health", health)
     app.router.add_get("/{filename}", static)
     runner = web.AppRunner(app)
     await runner.setup()

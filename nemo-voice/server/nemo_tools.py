@@ -14,8 +14,8 @@ import hashlib
 import hmac
 import requests
 import glob as glob_module
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
-from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -97,8 +97,9 @@ def get_oauth_tokens(user_id: int, service: str) -> dict:
 
 # Per-session user context — ContextVar is async-safe: each asyncio task
 # gets its own copy, preventing cross-session identity leakage.
-from contextvars import ContextVar
-_session_user_id: ContextVar[int] = ContextVar('session_user_id', default=DEFAULT_CHAT_ID)
+_session_user_id: ContextVar[int] = ContextVar(
+    "session_user_id", default=DEFAULT_CHAT_ID
+)
 
 
 def set_session_user(user_id: int):
@@ -449,7 +450,10 @@ def fetch_url(url: str) -> dict:
     """Fetch and read text content of a public web page or PDF URL.
     Private/internal addresses are blocked (SSRF protection)."""
     try:
-        import re, ipaddress, urllib.parse, socket
+        import re
+        import ipaddress
+        import urllib.parse
+        import socket
         # SSRF guard: reject private/internal hosts
         parsed = urllib.parse.urlparse(url)
         host = parsed.hostname or ""
