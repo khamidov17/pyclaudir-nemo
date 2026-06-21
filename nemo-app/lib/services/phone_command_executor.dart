@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'biometric_service.dart';
+import '../screens/vision_mode_screen.dart';
 
 /// Result of one phone command.
 class ActionOutcome {
@@ -30,8 +31,6 @@ class PhoneCommandExecutor {
   static const _screenshot = MethodChannel('com.avazbek.nemo_app/screenshot');
   static const _intents = MethodChannel('com.avazbek.nemo_app/intents');
 
-  CameraController? _camera;
-
   Future<ActionOutcome> execute(String cmd, {BuildContext? context}) async {
     if (BiometricService.isSensitive(cmd)) {
       if (context == null || !context.mounted) {
@@ -42,14 +41,14 @@ class PhoneCommandExecutor {
       if (!ok) return const ActionOutcome.fail('user denied — biometric failed');
     }
     try {
-      return await _dispatch(cmd);
+      return await _dispatch(cmd, context: context);
     } catch (e) {
       debugPrint('[executor] error for $cmd: $e');
       return ActionOutcome.fail(e.toString());
     }
   }
 
-  Future<ActionOutcome> _dispatch(String cmd) async {
+  Future<ActionOutcome> _dispatch(String cmd, {BuildContext? context}) async {
     final parts = cmd.split(' ');
     final verb = parts[0].toLowerCase();
     final arg = parts.skip(1).join(' ');
@@ -60,7 +59,7 @@ class PhoneCommandExecutor {
       case 'screenshot':
         return _takeScreenshot();
       case 'camera':
-        return _captureCamera();
+        return _captureCamera(context: context);
       case 'ui_tree':
         final tree =
             await _accessibility.invokeMethod<String>('getUiTree') ?? 'unavailable';
@@ -298,20 +297,38 @@ class PhoneCommandExecutor {
     }
   }
 
-  Future<ActionOutcome> _captureCamera() async {
+  Future<ActionOutcome> _captureCamera({BuildContext? context}) async {
+    // Prefer the warm, on-screen live camera (vision mode): instant grab of the
+    // exact frame the user sees.
+    if (VisionMode.isOpen) {
+      final b64 = await VisionMode.grab();
+      if (b64 != null) return ActionOutcome.image(b64);
+    }
+    // Not open yet → open the live camera screen, wait for it, grab THAT frame.
+    if (context != null && context.mounted) {
+      await VisionMode.open(context);
+      if (VisionMode.isOpen) {
+        final b64 = await VisionMode.grab();
+        if (b64 != null) return ActionOutcome.image(b64);
+      }
+    }
+    // Cold fallback (no UI context): one-shot, mic-free (never take the mic — the
+    // voice session owns it), created and disposed locally.
+    CameraController? c;
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) return const ActionOutcome.fail('no camera');
-      _camera ??= CameraController(cameras.first, ResolutionPreset.medium);
-      if (!_camera!.value.isInitialized) await _camera!.initialize();
-      final file = await _camera!.takePicture();
+      c = CameraController(cameras.first, ResolutionPreset.medium,
+          enableAudio: false);
+      await c.initialize();
+      final file = await c.takePicture();
       return ActionOutcome.image(base64Encode(await file.readAsBytes()));
     } catch (e) {
       return ActionOutcome.fail('camera capture failed: $e');
+    } finally {
+      await c?.dispose();
     }
   }
 
-  void dispose() {
-    _camera?.dispose();
-  }
+  void dispose() {}
 }

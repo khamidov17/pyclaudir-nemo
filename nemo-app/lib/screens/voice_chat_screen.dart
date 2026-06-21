@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/voice_session_controller.dart';
 import '../theme.dart';
 import '../widgets/voice_orb.dart';
+import 'vision_mode_screen.dart';
 
 /// Window onto the app-level voice session (VoiceSessionController).
 ///
@@ -62,6 +63,14 @@ class _VoiceChatScreenState extends State<VoiceChatScreen> {
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
+          // Open the in-app live camera (front/back) so Nemo can see what you
+          // show it — point at something and ask "what is this?". Stays inside
+          // Nemo; no need to open the system camera.
+          IconButton(
+            tooltip: 'Show Nemo something (camera)',
+            icon: const Icon(Icons.photo_camera_outlined),
+            onPressed: () => VisionMode.open(context),
+          ),
           ListenableBuilder(
             listenable: _session,
             builder: (_, __) => _session.isActive

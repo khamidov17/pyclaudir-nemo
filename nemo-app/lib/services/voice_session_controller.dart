@@ -152,6 +152,13 @@ class VoiceSessionController extends ChangeNotifier {
       // down its own mic/socket; we must hand the mic back to "hey nemo" or the
       // wake word stays dead until the app restarts.
       _onSessionEnded();
+    } else if (signal == 'deactivate') {
+      // User said "shut up / go to sleep" → end the live session NOW and drop to
+      // wake-word-only mode. stop() closes the mic/socket (no reconnect) and
+      // re-arms the on-device wake word — nothing is streamed until "hey nemo".
+      _add('💤 deactivated — say "hey nemo" to wake me');
+      idleClosed = true;
+      stop();
     }
     notifyListeners();
   }

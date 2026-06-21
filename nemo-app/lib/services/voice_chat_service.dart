@@ -303,6 +303,10 @@ class VoiceChatService extends ChangeNotifier {
           _controls.add('interrupted');
         case 'ready':
           _controls.add('ready');
+        case 'deactivate':
+          // User said "shut up / go to sleep" — the controller ends the session
+          // and hands the mic back to the on-device wake word (no reconnect).
+          _controls.add('deactivate');
         case 'action':
           _actions.add(data);
         case 'error':
