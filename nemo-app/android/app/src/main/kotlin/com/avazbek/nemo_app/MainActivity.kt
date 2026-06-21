@@ -30,6 +30,7 @@ class MainActivity : FlutterActivity() {
         const val CH_NOTIFICATION = "com.avazbek.nemo_app/notification"
         const val CH_VOICE = "com.avazbek.nemo_app/voice_player"
         const val CH_WAKEWORD = "com.avazbek.nemo_app/wakeword"
+        const val CH_MESSAGES = "com.avazbek.nemo_app/messages"
         const val SCREENSHOT_REQUEST = 1001
     }
 
@@ -88,6 +89,25 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_INTENTS)
             .setMethodCallHandler { call, result ->
                 IntentActions.handle(this, call, result)
+            }
+
+        // ── Message awareness channel (captured notifications) ─────────
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_MESSAGES)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "getMessages" ->
+                        result.success(NemoNotificationListenerService.getJson(this))
+                    "isAccessGranted" ->
+                        result.success(NemoNotificationListenerService.isAccessGranted(this))
+                    "openAccessSettings" -> {
+                        startActivity(
+                            Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
             }
 
         // ── Screenshot channel (MediaProjection) ───────────────────────

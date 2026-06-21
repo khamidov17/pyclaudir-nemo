@@ -71,6 +71,18 @@
                 android:resource="@xml/accessibility_service_config"/>
         </service>
 
+        <!-- Message awareness: reads notifications (Telegram/WhatsApp) for the
+             "check my messages" rundown. User grants access once in Settings. -->
+        <service
+            android:name=".NemoNotificationListenerService"
+            android:exported="true"
+            android:label="Nemo Message Awareness"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+
         <!-- Hash-verified APK installs (UpdateService → IntentActions.installApk) -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import 'biometric_service.dart';
+import 'messages_service.dart';
 import '../screens/vision_mode_screen.dart';
 
 /// Result of one phone command.
@@ -60,6 +61,14 @@ class PhoneCommandExecutor {
         return _takeScreenshot();
       case 'camera':
         return _captureCamera(context: context);
+      case 'read_messages':
+        // Return the captured-notification buffer as a JSON string in `text`
+        // (action_bridge only forwards specific fields; the server parses text).
+        if (!await MessageAwareness.isAccessGranted()) {
+          return const ActionOutcome.fail(
+              'notification access is off — turn it on in Nemo Settings');
+        }
+        return ActionOutcome.success(await MessageAwareness.getMessages());
       case 'ui_tree':
         final tree =
             await _accessibility.invokeMethod<String>('getUiTree') ?? 'unavailable';

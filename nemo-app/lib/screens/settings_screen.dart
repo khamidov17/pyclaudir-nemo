@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
 import '../services/background_service.dart';
+import '../services/messages_service.dart';
 import '../services/nemo_service.dart';
 import '../services/secure_net.dart';
 import '../services/update_service.dart';
@@ -166,6 +167,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           )),
           const SizedBox(height: 12),
+
+          _sectionLabel('Messages'),
+          _card(FutureBuilder<bool>(
+            future: MessageAwareness.isAccessGranted(),
+            builder: (_, snap) {
+              final granted = snap.data ?? false;
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Message awareness',
+                    style: TextStyle(
+                        color: NemoColors.text, fontWeight: FontWeight.w600)),
+                subtitle: Text(
+                  granted
+                      ? 'On. Ask "check my messages" — Nemo reads recent '
+                          'Telegram/WhatsApp. Codes are hidden; nothing is stored.'
+                      : 'Off. Grant notification access so Nemo can read your '
+                          'latest Telegram/WhatsApp on request.',
+                  style:
+                      const TextStyle(color: NemoColors.textDim, fontSize: 13),
+                ),
+                trailing: FilledButton(
+                  onPressed: () async {
+                    await MessageAwareness.openAccessSettings();
+                    if (mounted) setState(() {});
+                  },
+                  child: Text(granted ? 'Manage' : 'Enable'),
+                ),
+              );
+            },
+          )),
+          const SizedBox(height: 24),
 
           // VOICE_PICKER_SLOT
           _card(Column(
