@@ -18,8 +18,12 @@ class BiometricService {
   // + the OS installer prompt. 'tg_msg' is deliberately NOT gated so it works
   // hands-free in a background voice session; its protection is the
   // authenticated, owner-only server path.)
+  // 'camera' is NOT gated: the `look` vision tool only fires on an explicit
+  // spoken request ("what is this?"), so the request itself is the consent —
+  // and a fingerprint prompt would fail closed in a hands-free voice session.
+  // 'type' stays gated (typing into apps is a write that could be abused).
   static const _sensitiveVerbs = {
-    'camera', 'type',
+    'type',
   };
 
   static bool isSensitive(String command) =>

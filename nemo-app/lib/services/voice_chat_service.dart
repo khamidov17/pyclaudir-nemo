@@ -82,7 +82,8 @@ class VoiceChatService extends ChangeNotifier {
       StreamController.broadcast();
   Stream<Map<String, dynamic>> get actions => _actions.stream;
 
-  void sendActionResult(String id, {bool ok = true, String? text, String? error}) {
+  void sendActionResult(String id,
+      {bool ok = true, String? text, String? error, String? imageB64}) {
     final ws = _ws;
     if (ws == null) return;
     ws.sink.add(jsonEncode({
@@ -91,6 +92,9 @@ class VoiceChatService extends ChangeNotifier {
       'ok': ok,
       if (text != null) 'text': text,
       if (error != null) 'error': error,
+      // Carries camera/screenshot bytes back so the `look` vision tool can send
+      // them to Qwen-VL. Large, but only for explicit look requests.
+      if (imageB64 != null) 'image_b64': imageB64,
     }));
   }
 

@@ -167,7 +167,8 @@ class VoiceSessionController extends ChangeNotifier {
       cmd,
       context: _navigatorKey?.currentContext,
     );
-    _voice.sendActionResult(id, ok: r.ok, text: r.text, error: r.error);
+    _voice.sendActionResult(
+        id, ok: r.ok, text: r.text, error: r.error, imageB64: r.imageB64);
   }
 
   Future<bool> start() async {
