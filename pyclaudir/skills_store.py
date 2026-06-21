@@ -77,7 +77,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
         raise SkillsError(f"SKILL.md frontmatter is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
         raise SkillsError("SKILL.md frontmatter must be a YAML mapping")
-    return data, text[m.end():]
+    return data, text[m.end() :]
 
 
 def _validate_skill_metadata(metadata: dict, expected_name: str) -> None:

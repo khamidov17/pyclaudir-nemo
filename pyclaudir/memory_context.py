@@ -88,9 +88,7 @@ def build_memory_context(text: str, store: "MemoryStore") -> str | None:
 def _flatten(context: str) -> str:
     """Collapse multiline context block to a single readable line."""
     return " | ".join(
-        ln.lstrip("→ ").strip()
-        for ln in context.splitlines()
-        if ln.strip()
+        ln.lstrip("→ ").strip() for ln in context.splitlines() if ln.strip()
     )
 
 
@@ -106,5 +104,7 @@ def _find_matches(filename: str, text: str, pattern: re.Pattern) -> list[dict]:
         for j in range(start, end):
             prefix = "→ " if j == i else "  "
             ctx_parts.append(f"{prefix}{j + 1}: {lines[j]}")
-        results.append({"file": filename, "line": i + 1, "context": "\n".join(ctx_parts)})
+        results.append(
+            {"file": filename, "line": i + 1, "context": "\n".join(ctx_parts)}
+        )
     return results

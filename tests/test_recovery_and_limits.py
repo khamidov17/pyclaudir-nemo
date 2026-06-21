@@ -70,9 +70,7 @@ async def test_rate_limiter_owner_is_exempt(tmp_path: Path) -> None:
         for _ in range(100):
             await rl.check_and_record(42)
         # No rate_limits row should exist for the owner.
-        row = await db.fetch_one(
-            "SELECT count FROM rate_limits WHERE user_id=?", (42,)
-        )
+        row = await db.fetch_one("SELECT count FROM rate_limits WHERE user_id=?", (42,))
         assert row is None
     finally:
         await db.close()

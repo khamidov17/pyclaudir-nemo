@@ -88,7 +88,13 @@ BASH_TOOLS: tuple[str, ...] = ("Bash", "PowerShell", "Monitor")
 
 #: Tools unlocked when ``enable_code`` is True.
 CODE_TOOLS: tuple[str, ...] = (
-    "Edit", "Write", "Read", "NotebookEdit", "Glob", "Grep", "LSP",
+    "Edit",
+    "Write",
+    "Read",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "LSP",
 )
 
 #: Forbidden flag — never pass this. ``build_argv`` enforces it at build
@@ -172,7 +178,10 @@ def build_argv(spec: CcSpawnSpec) -> list[str]:
         system_prompt += "\n\n" + spec.project_prompt_path.read_text(encoding="utf-8")
     system_prompt += "\n\n" + runtime_block
     if spec.enable_subagents:
-        if spec.subagents_prompt_path is None or not spec.subagents_prompt_path.exists():
+        if (
+            spec.subagents_prompt_path is None
+            or not spec.subagents_prompt_path.exists()
+        ):
             raise FileNotFoundError(
                 "enable_subagents=True but subagents_prompt_path is missing: "
                 f"{spec.subagents_prompt_path!r}"
@@ -210,17 +219,26 @@ def build_argv(spec: CcSpawnSpec) -> list[str]:
     argv: list[str] = [
         spec.binary,
         "--print",
-        "--input-format", "stream-json",
-        "--output-format", "stream-json",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--model", spec.model,
-        "--effort", spec.effort,
-        "--system-prompt", system_prompt,
-        "--mcp-config", str(spec.mcp_config_path),
+        "--model",
+        spec.model,
+        "--effort",
+        spec.effort,
+        "--system-prompt",
+        system_prompt,
+        "--mcp-config",
+        str(spec.mcp_config_path),
         "--strict-mcp-config",
-        "--allowedTools", ",".join(allowed_tools),
-        "--disallowedTools", ",".join(disallowed_tools),
-        "--json-schema", json_schema,
+        "--allowedTools",
+        ",".join(allowed_tools),
+        "--disallowedTools",
+        ",".join(disallowed_tools),
+        "--json-schema",
+        json_schema,
     ]
     if spec.session_id:
         argv += ["--resume", spec.session_id]

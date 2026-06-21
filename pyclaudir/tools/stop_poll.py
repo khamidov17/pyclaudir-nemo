@@ -34,7 +34,9 @@ class StopPollTool(BaseTool):
         )
         log.info(
             "poll closed chat=%s msg=%s votes=%d",
-            args.chat_id, args.message_id, poll.total_voter_count,
+            args.chat_id,
+            args.message_id,
+            poll.total_voter_count,
         )
 
         options_data = [

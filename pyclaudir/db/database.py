@@ -104,14 +104,18 @@ class Database:
         await self._conn.execute(sql, tuple(params or ()))
         await self._conn.commit()
 
-    async def fetch_all(self, sql: str, params: Iterable | None = None) -> list[aiosqlite.Row]:
+    async def fetch_all(
+        self, sql: str, params: Iterable | None = None
+    ) -> list[aiosqlite.Row]:
         cursor = await self._conn.execute(sql, tuple(params or ()))
         try:
             return list(await cursor.fetchall())
         finally:
             await cursor.close()
 
-    async def fetch_one(self, sql: str, params: Iterable | None = None) -> aiosqlite.Row | None:
+    async def fetch_one(
+        self, sql: str, params: Iterable | None = None
+    ) -> aiosqlite.Row | None:
         cursor = await self._conn.execute(sql, tuple(params or ()))
         try:
             return await cursor.fetchone()

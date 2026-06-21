@@ -17,6 +17,7 @@ import math
 import os
 import sqlite3
 import struct
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,11 @@ def _embed(texts: list[str]) -> list[list[float]] | None:
 
 def _connect() -> sqlite3.Connection:
     con = sqlite3.connect(str(_INDEX_DB), timeout=5.0)
+    # WAL lets the engine and the voice process read/write this shared index
+    # concurrently instead of blocking each other ("database is locked"). WAL is
+    # persistent at the file level; busy_timeout waits out a transient writer.
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=5000")
     con.execute(
         "CREATE TABLE IF NOT EXISTS chunks "
         "(id TEXT PRIMARY KEY, source TEXT, ref TEXT, text TEXT, "
@@ -97,6 +103,21 @@ def _gather() -> dict[str, tuple[str, str]]:
             if len(t) >= _MIN_CHARS:
                 out[_chunk_id(t)] = (f"{f.name}:{i}", t)
     return out
+
+
+# reindex() writes; the voice process writes the same shared index. Throttle so
+# back-to-back recalls don't collide on the write lock ("database is locked").
+_REINDEX_MIN_SEC = float(os.environ.get("NEMO_REINDEX_MIN_SEC", "45"))
+_last_reindex = 0.0
+
+
+def _maybe_reindex() -> None:
+    global _last_reindex
+    now = time.monotonic()
+    if now - _last_reindex < _REINDEX_MIN_SEC:
+        return
+    _last_reindex = now
+    reindex()
 
 
 def reindex() -> int:
@@ -147,7 +168,7 @@ def search(query: str, limit: int = 8) -> list[dict]:
     q = (query or "").strip()
     if not q or not available():
         return []
-    reindex()
+    _maybe_reindex()
     qv = _embed([q])
     if not qv:
         return []

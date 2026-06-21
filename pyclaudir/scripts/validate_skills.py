@@ -70,7 +70,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"skills root is not a directory: {root}", file=sys.stderr)
         return 2
 
-    entries = sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    entries = sorted(
+        p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
     if not entries:
         print("(no skills found — nothing to validate)")
         return 0

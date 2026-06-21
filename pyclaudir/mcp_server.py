@@ -102,8 +102,12 @@ def _make_wrapper(tool: BaseTool, db_logger):
                     await db_logger(
                         tool_name=tool.name,
                         args_json=json.dumps(kwargs, default=str),
-                        result_json=None if err else json.dumps(
-                            {"content": result.content, "data": result.data} if result else {},
+                        result_json=None
+                        if err
+                        else json.dumps(
+                            {"content": result.content, "data": result.data}
+                            if result
+                            else {},
                             default=str,
                         ),
                         error=err,
@@ -176,7 +180,9 @@ class McpServer:
         self._ctx = ctx
         self._db_logger = db_logger
         self.mcp, self.tools = build_fastmcp(
-            ctx, db_logger=db_logger, disabled=disabled,
+            ctx,
+            db_logger=db_logger,
+            disabled=disabled,
         )
         self._server: uvicorn.Server | None = None
         self._task = None

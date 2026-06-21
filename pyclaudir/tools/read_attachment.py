@@ -77,7 +77,11 @@ class ReadAttachmentTool(BaseTool):
                 return ToolResult(content=f"{type(exc).__name__}: {exc}", is_error=True)
             return ToolResult(
                 content=f"image attachment {relative} ({img.mime}, {img.size_bytes} bytes)",
-                data={"path": str(img.path), "mime": img.mime, "size_bytes": img.size_bytes},
+                data={
+                    "path": str(img.path),
+                    "mime": img.mime,
+                    "size_bytes": img.size_bytes,
+                },
                 image_path=img.path,
             )
 

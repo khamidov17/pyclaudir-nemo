@@ -24,10 +24,14 @@ def caplog_tx(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
 
 def test_inbound_dm_format(caplog_tx) -> None:
     log_inbound(
-        chat_id=12345, chat_type="private",
+        chat_id=12345,
+        chat_type="private",
         chat_titles={12345: "Alice"},
-        user_id=12345, user_name="Alice",
-        message_id=42, reply_to_id=None, text="hi",
+        user_id=12345,
+        user_name="Alice",
+        message_id=42,
+        reply_to_id=None,
+        text="hi",
         allowed=True,
     )
     line = caplog_tx.records[-1].getMessage()
@@ -41,10 +45,14 @@ def test_inbound_dm_format(caplog_tx) -> None:
 
 def test_inbound_group_format(caplog_tx) -> None:
     log_inbound(
-        chat_id=-1001234567890, chat_type="supergroup",
+        chat_id=-1001234567890,
+        chat_type="supergroup",
         chat_titles={-1001234567890: "Team Chat"},
-        user_id=42, user_name="Alice",
-        message_id=10, reply_to_id=5, text="hello team",
+        user_id=42,
+        user_name="Alice",
+        message_id=10,
+        reply_to_id=5,
+        text="hello team",
         allowed=True,
     )
     line = caplog_tx.records[-1].getMessage()
@@ -58,10 +66,14 @@ def test_inbound_group_format(caplog_tx) -> None:
 
 def test_inbound_dropped_format(caplog_tx) -> None:
     log_inbound(
-        chat_id=999, chat_type="private",
+        chat_id=999,
+        chat_type="private",
         chat_titles={},
-        user_id=999, user_name="Stranger",
-        message_id=1, reply_to_id=None, text="leaked spam",
+        user_id=999,
+        user_name="Stranger",
+        message_id=1,
+        reply_to_id=None,
+        text="leaked spam",
         allowed=False,
     )
     line = caplog_tx.records[-1].getMessage()
@@ -73,8 +85,11 @@ def test_inbound_dropped_format(caplog_tx) -> None:
 def test_outbound_uses_cached_title(caplog_tx) -> None:
     titles = {-1001234567890: "Team Chat"}
     log_outbound(
-        chat_id=-1001234567890, chat_titles=titles,
-        message_id=99, reply_to_id=10, text="hello!",
+        chat_id=-1001234567890,
+        chat_titles=titles,
+        message_id=99,
+        reply_to_id=10,
+        text="hello!",
     )
     line = caplog_tx.records[-1].getMessage()
     assert "[TX]" in line
@@ -86,8 +101,11 @@ def test_outbound_uses_cached_title(caplog_tx) -> None:
 
 def test_outbound_falls_back_to_chat_id_only(caplog_tx) -> None:
     log_outbound(
-        chat_id=-1009999999999, chat_titles={},
-        message_id=1, reply_to_id=None, text="hi",
+        chat_id=-1009999999999,
+        chat_titles={},
+        message_id=1,
+        reply_to_id=None,
+        text="hi",
     )
     line = caplog_tx.records[-1].getMessage()
     assert "[TX]" in line
@@ -98,9 +116,14 @@ def test_outbound_falls_back_to_chat_id_only(caplog_tx) -> None:
 def test_inbound_truncates_long_body(caplog_tx) -> None:
     body = "x" * 500
     log_inbound(
-        chat_id=1, chat_type="private", chat_titles={},
-        user_id=1, user_name=None,
-        message_id=1, reply_to_id=None, text=body,
+        chat_id=1,
+        chat_type="private",
+        chat_titles={},
+        user_id=1,
+        user_name=None,
+        message_id=1,
+        reply_to_id=None,
+        text=body,
         allowed=True,
     )
     line = caplog_tx.records[-1].getMessage()
@@ -110,9 +133,14 @@ def test_inbound_truncates_long_body(caplog_tx) -> None:
 
 def test_inbound_flattens_newlines(caplog_tx) -> None:
     log_inbound(
-        chat_id=1, chat_type="private", chat_titles={},
-        user_id=1, user_name=None, message_id=1,
-        reply_to_id=None, text="line one\nline two\rline three",
+        chat_id=1,
+        chat_type="private",
+        chat_titles={},
+        user_id=1,
+        user_name=None,
+        message_id=1,
+        reply_to_id=None,
+        text="line one\nline two\rline three",
         allowed=True,
     )
     line = caplog_tx.records[-1].getMessage()
@@ -126,9 +154,12 @@ def test_edit_and_delete_and_reaction(caplog_tx) -> None:
     log_delete(chat_id=-1, chat_titles=titles, message_id=5)
     log_reaction(chat_id=-1, chat_titles=titles, message_id=5, emoji="👍")
     log_inbound_edit(
-        chat_id=-1, chat_titles=titles,
-        user_id=42, user_name="Alice",
-        message_id=5, text="user fixed typo",
+        chat_id=-1,
+        chat_titles=titles,
+        user_id=42,
+        user_name="Alice",
+        message_id=5,
+        text="user fixed typo",
     )
     msgs = [r.getMessage() for r in caplog_tx.records[-4:]]
     assert any(m.startswith("[EDIT]") for m in msgs)

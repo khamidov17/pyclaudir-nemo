@@ -111,10 +111,19 @@ class Engine:
         typing_action: TypingAction | None = None,
         error_notify: ErrorNotify | None = None,
         ctx: Any = None,
+        default_runtime_profile: Any = None,
     ) -> None:
         self._worker = worker
         self._debounce = debounce_ms / 1000.0
         self._db = db
+        self._owner_id = config.owner_id
+        #: Callable[[ChatMessage], dict | None] — computes a deterministic tool
+        #: profile for turns that arrive WITHOUT one (reminder/webhook/app
+        #: submits). Without it those turns would inherit whatever tools the last
+        #: turn installed, so an owner code turn could leave run_code live for a
+        #: later autonomous/webhook turn. Set by __main__ where owner_id +
+        #: external tools are known.
+        self._default_runtime_profile = default_runtime_profile
         #: Shared ToolContext. Used only to flag app-originated turns so
         #: ``send_message`` can suppress the Telegram echo for them.
         self._ctx = ctx
@@ -139,6 +148,10 @@ class Engine:
         self._typing = TypingState()
         self._pending: list[ChatMessage] = []
         self._pending_runtime_profiles: list[dict | None] = []
+        #: Set to wake the reminder loop immediately instead of waiting for its
+        #: next poll — the voice process pokes it (via app_api /internal/kick)
+        #: right after inserting a delegated task, so delegation feels instant.
+        self.reminder_kick = asyncio.Event()
         #: Per-submit ``on_success`` hooks queued alongside ``_pending``.
         #: Transferred to ``_turn_callbacks`` when the buffer drains into
         #: a turn (``_kick`` / ``_maybe_inject``). The reminder loop hangs
@@ -256,6 +269,11 @@ class Engine:
         log.info("starting turn with %d msgs", len(batch))
         await self._announce_turn_start(batch)
         runtime_profile = self._select_runtime_profile(runtime_profiles)
+        if runtime_profile is None and self._default_runtime_profile is not None:
+            # No transport supplied a profile (reminder/webhook/app turn) —
+            # compute a deterministic, source-gated one so this turn can't
+            # inherit the previous turn's tool set (e.g. a leftover run_code).
+            runtime_profile = self._default_runtime_profile(batch[-1])
         if runtime_profile:
             await self._worker.apply_runtime(**runtime_profile)
         await self._worker.send(xml)
@@ -294,6 +312,14 @@ class Engine:
             self._ctx.user_initiated = any(
                 getattr(m, "source", "telegram") not in ("reminder", "webhook")
                 for m in batch
+            )
+            # Owner backstop for run_code: True only when EVERY message in the
+            # turn is from the owner (fail closed on a mixed batch). A voice-
+            # delegated task fires as a reminder with user_id=owner (so coding
+            # works); a webhook (user_id=-1) or any non-owner message in the
+            # batch makes run_code refuse even if it slipped into the allowed set.
+            self._ctx.owner_turn = bool(batch) and all(
+                getattr(m, "user_id", 0) == self._owner_id for m in batch
             )
 
     async def _build_turn_prompt(self, batch: list[ChatMessage]) -> str:

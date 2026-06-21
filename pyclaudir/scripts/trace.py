@@ -185,8 +185,7 @@ def _render_tool_result_block(block: dict, ts: str, max_chars: int) -> str:
     raw = block.get("content")
     if isinstance(raw, list):
         text = " ".join(
-            (b.get("text", "") if isinstance(b, dict) else str(b))
-            for b in raw
+            (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw
         )
     else:
         text = "" if raw is None else str(raw)
@@ -331,23 +330,31 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--session", "-s",
+        "--session",
+        "-s",
         help="Specific session id (overrides --latest and the bot session finder)",
     )
     parser.add_argument(
-        "--follow", "-f", action="store_true",
+        "--follow",
+        "-f",
+        action="store_true",
         help="Tail the file like `tail -f`.",
     )
     parser.add_argument(
-        "--max", type=int, default=0,
+        "--max",
+        type=int,
+        default=0,
         help="Truncate long text blocks to N chars (0 = unlimited)",
     )
     parser.add_argument(
-        "--list", "-l", action="store_true",
+        "--list",
+        "-l",
+        action="store_true",
         help="List available session files and exit.",
     )
     parser.add_argument(
-        "--latest", action="store_true",
+        "--latest",
+        action="store_true",
         help=(
             "Use the most recently modified JSONL regardless of owner. "
             "Useful when you DO want to follow this CC session itself."
@@ -377,7 +384,10 @@ def main() -> int:
     if args.session:
         path = find_session_by_id(args.session)
         if path is None:
-            print(f"no session file for id {args.session} under {PROJECT_DIR}", file=sys.stderr)
+            print(
+                f"no session file for id {args.session} under {PROJECT_DIR}",
+                file=sys.stderr,
+            )
             return 1
     elif args.latest:
         path = find_latest_session()

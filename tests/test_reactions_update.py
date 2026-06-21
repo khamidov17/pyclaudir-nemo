@@ -71,12 +71,20 @@ async def test_user_changes_reaction(tmp_path: Path) -> None:
     try:
         await insert_message(db, _msg())
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=77,
-            old_emoji=[], new_emoji=["👍"],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=77,
+            old_emoji=[],
+            new_emoji=["👍"],
         )
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=77,
-            old_emoji=["👍"], new_emoji=["❤️"],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=77,
+            old_emoji=["👍"],
+            new_emoji=["❤️"],
         )
         assert await _reactions(db, 1, 1) == {"❤️": [77]}
     finally:
@@ -89,12 +97,20 @@ async def test_user_removes_reaction(tmp_path: Path) -> None:
     try:
         await insert_message(db, _msg())
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=77,
-            old_emoji=[], new_emoji=["👍"],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=77,
+            old_emoji=[],
+            new_emoji=["👍"],
         )
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=77,
-            old_emoji=["👍"], new_emoji=[],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=77,
+            old_emoji=["👍"],
+            new_emoji=[],
         )
         row = await db.fetch_one(
             "SELECT reactions FROM messages WHERE chat_id=1 AND message_id=1"
@@ -110,12 +126,20 @@ async def test_multiple_users_same_emoji(tmp_path: Path) -> None:
     try:
         await insert_message(db, _msg())
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=77,
-            old_emoji=[], new_emoji=["👍"],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=77,
+            old_emoji=[],
+            new_emoji=["👍"],
         )
         await apply_user_reaction(
-            db, chat_id=1, message_id=1, user_id=88,
-            old_emoji=[], new_emoji=["👍"],
+            db,
+            chat_id=1,
+            message_id=1,
+            user_id=88,
+            old_emoji=[],
+            new_emoji=["👍"],
         )
         data = await _reactions(db, 1, 1)
         assert sorted(data["👍"]) == [77, 88]
@@ -129,10 +153,18 @@ async def test_add_bot_reaction_replaces_prior_bot_reaction(tmp_path: Path) -> N
     try:
         await insert_message(db, _msg())
         await add_bot_reaction(
-            db, chat_id=1, message_id=1, bot_user_id=9999, emoji="👀",
+            db,
+            chat_id=1,
+            message_id=1,
+            bot_user_id=9999,
+            emoji="👀",
         )
         await add_bot_reaction(
-            db, chat_id=1, message_id=1, bot_user_id=9999, emoji="👍",
+            db,
+            chat_id=1,
+            message_id=1,
+            bot_user_id=9999,
+            emoji="👍",
         )
         # Only the latest bot reaction should remain (Telegram bots can have
         # only one reaction per message).
@@ -148,8 +180,12 @@ async def test_reaction_update_on_missing_message_is_noop(tmp_path: Path) -> Non
     try:
         # No INSERT into messages: row doesn't exist.
         await apply_user_reaction(
-            db, chat_id=1, message_id=999, user_id=77,
-            old_emoji=[], new_emoji=["👍"],
+            db,
+            chat_id=1,
+            message_id=999,
+            user_id=77,
+            old_emoji=[],
+            new_emoji=["👍"],
         )
         row = await db.fetch_one(
             "SELECT reactions FROM messages WHERE chat_id=1 AND message_id=999"

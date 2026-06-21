@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import tempfile
@@ -462,8 +463,13 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
 
 
 async def _reminder_loop(db: Database, engine: Engine) -> None:
-    """Background reminder scheduler — polls every 60s for due reminders
-    and injects them into the engine as synthetic inbound messages.
+    """Background reminder scheduler — polls for due reminders and injects
+    them into the engine as synthetic inbound messages.
+
+    The poll interval (``NEMO_REMINDER_POLL_SEC``, default 10s) also bounds how
+    fast a voice ``delegate_task`` reaches the engine — it lands as an immediate
+    reminder, so a slow poll made delegated coding feel broken ("taking too
+    long"). 10s keeps delegated tasks snappy while staying a cheap indexed query.
 
     Reminders fire unconditionally when due. If the engine is mid-turn
     the synthetic message gets buffered and runs after the current
@@ -472,8 +478,14 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
     reminders in the same poll cycle, and the failing row's id is
     logged so it's easy to track down.
     """
+    poll_sec = int(os.environ.get("NEMO_REMINDER_POLL_SEC", "10"))
     while True:
-        await asyncio.sleep(60)
+        # Wake on a kick (a just-delegated task) or after poll_sec at the latest.
+        try:
+            await asyncio.wait_for(engine.reminder_kick.wait(), timeout=poll_sec)
+        except asyncio.TimeoutError:
+            pass
+        engine.reminder_kick.clear()
         try:
             now_dt = datetime.now(timezone.utc)
             due = await fetch_due_reminders(
@@ -744,6 +756,23 @@ async def _async_main() -> None:
     async def _error_notify(chat_id: int, text: str) -> None:
         await _notify_owner(text, chat_id)
 
+    from .models import ChatMessage
+    from .tool_groups import build_turn_tools
+
+    def _default_runtime_profile(cm: ChatMessage) -> dict:
+        """Tool set for autonomous turns (reminder/webhook/app) that arrive with
+        no routed profile — owner-gated so a non-owner turn never gets the
+        OWNER_ONLY tools (run_code / phone / SQL), and so a turn can't inherit
+        the previous turn's tools."""
+        return {
+            "model": None,
+            "mcp_allowed_tools": build_turn_tools(
+                cm.text,
+                external_tools=tuple(mcp_allowed_tools),
+                is_owner=(cm.user_id == config.owner_id),
+            ),
+        }
+
     engine = Engine(
         worker,
         config,
@@ -752,6 +781,7 @@ async def _async_main() -> None:
         typing_action=_typing,
         error_notify=_error_notify,
         ctx=ctx,
+        default_runtime_profile=_default_runtime_profile,
     )
     await engine.start()
     if app_api is not None:

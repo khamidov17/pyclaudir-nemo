@@ -562,9 +562,7 @@ class CcWorker:
                     intentional,
                 )
                 if self._pending_runtime is not None:
-                    self.spec = dataclasses.replace(
-                        self.spec, **self._pending_runtime
-                    )
+                    self.spec = dataclasses.replace(self.spec, **self._pending_runtime)
                     log.info(
                         "applying pending runtime profile: %s",
                         sorted(self._pending_runtime),

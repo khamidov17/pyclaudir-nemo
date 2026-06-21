@@ -94,6 +94,11 @@ class ToolContext:
     #: ui_tree, camera) are refused when False so Nemo can never read the
     #: phone's screen/apps on its own. Set per-turn by the engine.
     user_initiated: bool = True
+    #: True when a message in the current turn is from the owner. ``run_code``
+    #: refuses when False — a deterministic backstop so a non-owner/webhook turn
+    #: can never execute code even if the allowed-tool set leaks it. Set per-turn
+    #: by the engine; defaults True so non-engine callers (tests) are unaffected.
+    owner_turn: bool = True
 
 
 @dataclass

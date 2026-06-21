@@ -184,9 +184,7 @@ async def fetch_reply_chain(
     return chain
 
 
-async def fetch_recent_messages(
-    db: Database, chat_id: int, limit: int
-) -> list[dict]:
+async def fetch_recent_messages(db: Database, chat_id: int, limit: int) -> list[dict]:
     """Return the last ``limit`` messages for ``chat_id``, oldest-first.
 
     Used to re-seed the next turn after Claude Code auto-compacts its

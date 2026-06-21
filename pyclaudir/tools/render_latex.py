@@ -32,6 +32,7 @@ _KATEX_VERSION = "0.16.9"
 _WIDTH = 900
 _HEIGHT = 400
 
+
 def _build_html(latex: str, title: str | None) -> str:
     """Assemble the rendered HTML page.
 

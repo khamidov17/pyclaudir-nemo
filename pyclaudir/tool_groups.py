@@ -126,6 +126,21 @@ TOOL_MODULES: tuple[ToolModule, ...] = (
         ),
         tools=("WebFetch", "WebSearch"),
     ),
+    ToolModule(
+        name="code",
+        keywords=(
+            "code",
+            "run code",
+            "script",
+            "python",
+            "calculate",
+            "compute",
+            "program",
+            "debug",
+        ),
+        # Sandboxed execution (sandbox0) — the host shell stays disabled.
+        tools=("mcp__pyclaudir__run_code",),
+    ),
 )
 
 INTENT_TOOLS: dict[str, tuple[str, ...]] = {
@@ -150,7 +165,7 @@ INTENT_TOOLS: dict[str, tuple[str, ...]] = {
         "mcp__pyclaudir__send_photo",
         "mcp__pyclaudir__read_attachment",
     ),
-    "CODEX": ("mcp__codex",),
+    "CODEX": ("mcp__codex", "mcp__pyclaudir__run_code"),
     "FULL_NEMO": (
         "mcp__pyclaudir__search_memories",
         "mcp__pyclaudir__read_memory",
@@ -184,6 +199,9 @@ OWNER_ONLY_TOOLS: frozenset[str] = frozenset(
     {
         "mcp__pyclaudir__phone_action",
         "mcp__pyclaudir__query_db",
+        # Sandboxed, but still: only the owner's own words may run code, so a
+        # crafted group message can't summon execution even if access loosens.
+        "mcp__pyclaudir__run_code",
     }
 )
 

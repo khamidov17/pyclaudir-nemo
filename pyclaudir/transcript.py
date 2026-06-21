@@ -38,7 +38,7 @@ def _chat_label(
     title = (chat_titles or {}).get(chat_id)
     if chat_type == "private" or chat_id > 0:
         if title:
-            return f'DM {title}[{chat_id}]'
+            return f"DM {title}[{chat_id}]"
         return f"DM [{chat_id}]"
     if title:
         return f'G "{title}"[{chat_id}]'
@@ -71,7 +71,9 @@ def log_inbound(
     body = _truncate(text)
     prefix = "[RX]" if allowed else "[DROP]"
     suffix = "" if allowed else " (chat not allowed)"
-    log.info("%s %s %s m%d%s%s | %s", prefix, chat, user, message_id, reply, suffix, body)
+    log.info(
+        "%s %s %s m%d%s%s | %s", prefix, chat, user, message_id, reply, suffix, body
+    )
 
 
 def log_inbound_edit(

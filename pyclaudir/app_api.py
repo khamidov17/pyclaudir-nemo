@@ -236,7 +236,12 @@ class AppApiServer:
                 ChatMessage(
                     chat_id=self._owner_id,
                     message_id=_next_msg_id(),
-                    user_id=self._owner_id,
+                    # NOT owner: an external (token-authed but untrusted) event
+                    # must never be owner-privileged — this strips OWNER_ONLY
+                    # tools (run_code/phone/SQL) and trips the run_code backstop,
+                    # so an injected /hook payload can't reach code execution.
+                    # Delivery still routes by chat_id (owner).
+                    user_id=-1,
                     direction="in",
                     timestamp=datetime.now(timezone.utc),
                     text=framed,
@@ -245,6 +250,26 @@ class AppApiServer:
             )
             log.info("webhook → engine: %r", text[:80])
             return {"status": "delivered"}
+
+        @app.post("/internal/kick")
+        async def internal_kick(request: Request, token: str = "") -> dict:
+            """Wake the reminder loop NOW — the voice process pokes this right
+            after inserting a delegated task so it runs in ~0s instead of waiting
+            for the poll. Localhost + app-token only (it can trigger work)."""
+            from fastapi import HTTPException
+
+            client = request.client.host if request.client else ""
+            if client not in ("127.0.0.1", "::1", "localhost"):
+                raise HTTPException(403, "local only")
+            bearer = request.headers.get("authorization", "")
+            supplied = (
+                bearer[7:].strip() if bearer.lower().startswith("bearer ") else token
+            )
+            if not _check_token(supplied):
+                raise HTTPException(401, "unauthorized")
+            if self._engine is not None:
+                self._engine.reminder_kick.set()  # type: ignore[union-attr]
+            return {"status": "kicked"}
 
         @app.websocket("/ws")
         async def ws_endpoint(websocket: WebSocket, device_id: str = "") -> None:

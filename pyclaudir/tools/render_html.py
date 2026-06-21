@@ -168,7 +168,8 @@ async def _close_browser(browser) -> None:
     except (asyncio.TimeoutError, Exception) as exc:
         log.warning(
             "browser.close hung/failed (%s: %s); force-killing chromium",
-            type(exc).__name__, exc,
+            type(exc).__name__,
+            exc,
         )
         proc = getattr(browser, "process", None)
         if proc is not None:
@@ -248,7 +249,10 @@ class RenderHtmlTool(BaseTool):
         size = out_path.stat().st_size
         log.info(
             "rendered html → %s (%d bytes, %dx%d)",
-            relative, size, args.width, args.height,
+            relative,
+            size,
+            args.width,
+            args.height,
         )
         return ToolResult(
             content=(
