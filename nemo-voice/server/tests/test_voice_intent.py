@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import pytest
 
-from voice_intent import is_code_intent, is_messages_intent, is_search_intent
+from voice_intent import (
+    is_code_intent,
+    is_deactivate_intent,
+    is_messages_intent,
+    is_search_intent,
+    is_vision_intent,
+)
 
 
 @pytest.mark.parametrize(
@@ -92,6 +98,86 @@ def test_messages_fires_on_check(text):
 )
 def test_messages_quiet_on_send_or_chitchat(text):
     assert is_messages_intent(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "what is this",
+        "what's this thing",
+        "what am i looking at",
+        "look at this",
+        "read this for me",
+        "translate this menu",
+        "who is this in front of me",
+        "what do you see",
+        "can you see this",
+    ],
+)
+def test_vision_fires_on_look_requests(text):
+    assert is_vision_intent(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # search verbs must NOT trigger the camera (the collision the review flagged)
+        "look it up",
+        "look up the score",
+        "search for the weather",
+        "google it",
+        "find out who won",
+        # chitchat
+        "how are you",
+        "tell me a joke",
+        "",
+    ],
+)
+def test_vision_quiet_on_search_or_chitchat(text):
+    assert is_vision_intent(text) is False
+
+
+def test_vision_and_search_are_mutually_exclusive():
+    # the two functions must never both fire on the same utterance
+    for phrase in ["look at this", "look it up", "what is this", "search for x"]:
+        assert not (is_vision_intent(phrase) and is_search_intent(phrase))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "shut up",
+        "shutup",
+        "be quiet",
+        "stop listening",
+        "go to sleep",
+        "sleep mode",
+        "deactivate",
+        "turn yourself off",
+        "leave me alone",
+        "okay that's all nemo",
+        "goodbye nemo",
+        "nemo shut up",
+    ],
+)
+def test_deactivate_fires_on_off_commands(text):
+    assert is_deactivate_intent(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # must NOT deactivate on normal requests
+        "stop the timer",
+        "set a reminder",
+        "what's the weather",
+        "stop the music",  # not 'stop listening/talking'
+        "how are you",
+        "",
+    ],
+)
+def test_deactivate_quiet_on_normal_requests(text):
+    assert is_deactivate_intent(text) is False
 
 
 @pytest.mark.parametrize(

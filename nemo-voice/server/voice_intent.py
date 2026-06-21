@@ -91,6 +91,60 @@ def is_messages_intent(text: str) -> bool:
     return any(p.search(t) for p in _MESSAGES_PATTERNS)
 
 
+# "Look at what the camera sees" intent. Must NOT collide with web search:
+# "look UP / look it up" = search; "look AT this" = vision.
+_VISION_PATTERNS = [
+    re.compile(r"\b(what'?s|what\s+is)\s+this\b", re.I),
+    re.compile(r"\bwhat\s+am\s+i\s+looking\s+at\b", re.I),
+    re.compile(r"\blook\s+at\s+(this|that|here|it|my)\b", re.I),
+    re.compile(r"\b(read|translate|scan)\s+(this|that|it|the|my)\b", re.I),
+    re.compile(r"\b(who|what)\s+is\s+(this|that|in\s+front)\b", re.I),
+    re.compile(r"\b(what\s+do\s+you|can\s+you|do\s+you)\s+see\b", re.I),
+]
+# Reject the search verbs so "look it up" / "google" can't trigger the camera.
+_VISION_BLOCK = re.compile(
+    r"\b(look\s+(up|it\s+up|that\s+up)|search|google|find\s+(out|online))\b", re.I
+)
+
+
+def is_vision_intent(text: str) -> bool:
+    """True only when the user asked Nemo to LOOK at something via the camera."""
+    t = (text or "").strip()
+    if len(t) < 4 or _VISION_BLOCK.search(t):
+        return False
+    return any(p.search(t) for p in _VISION_PATTERNS)
+
+
+# "Shut up / go to sleep" — end the live session and drop back to wake-word-only
+# mode (no more dialog listening). Bare "stop" is deliberately NOT here (it
+# collides with "stop the timer"); the user has clear phrases below.
+_DEACTIVATE_PATTERNS = [
+    re.compile(r"\bshut\s*up\b", re.I),
+    re.compile(r"\bbe\s+quiet\b", re.I),
+    re.compile(r"\bstop\s+(listening|talking)\b", re.I),
+    re.compile(
+        r"\b(go\s+to\s+sleep|sleep\s+(mode|now)|go\s+(quiet|away|to\s+sleep))\b", re.I
+    ),
+    re.compile(
+        r"\b(deactivate|turn\s+(yourself\s+)?off|power\s+down|stand\s+down)\b", re.I
+    ),
+    re.compile(r"\bleave\s+me\s+alone\b", re.I),
+    re.compile(
+        r"\b(that'?s\s+all|we'?re\s+done|i'?m\s+done|goodbye|bye)\b.{0,8}\bnemo\b", re.I
+    ),
+    re.compile(r"\bnemo\b.{0,8}\b(shut\s*up|go\s+to\s+sleep|stop|quiet)\b", re.I),
+]
+
+
+def is_deactivate_intent(text: str) -> bool:
+    """True when the user told Nemo to stop/sleep — end the session, back to the
+    wake word."""
+    t = (text or "").strip()
+    if len(t) < 3:
+        return False
+    return any(p.search(t) for p in _DEACTIVATE_PATTERNS)
+
+
 async def recover_delegate(link, bridge, task: str) -> None:
     """Fire the delegate_task the model forgot, then have Nemo acknowledge it."""
     import voice_brain

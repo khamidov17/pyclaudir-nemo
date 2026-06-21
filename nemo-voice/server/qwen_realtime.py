@@ -228,6 +228,8 @@ class _QwenPump:
         # "check my messages" — recovery-only (read_messages isn't a model tool),
         # so an explicit ask always fires it and it can never fire on its own.
         self._pending_messages: bool = False
+        # "look at this" → camera: the user's question, if a vision request.
+        self._pending_vision: str | None = None
         # Latched (from link.sensitive_next) the moment THIS reply starts, so a
         # message-summary's privacy flag is bound to the right reply and can't be
         # consumed by an interleaved turn on the full-duplex link.
@@ -260,6 +262,14 @@ class _QwenPump:
             transcript = ev.get("transcript", "")
             LOG.info("user said: %r", transcript)
             voice_history.add("user", transcript)
+            if voice_intent.is_deactivate_intent(transcript):
+                # "shut up / go to sleep" → end the session NOW; the app drops to
+                # wake-word-only (local) mode. Cancel any reply so Nemo goes quiet.
+                LOG.info("deactivate on request — session to sleep")
+                await self.link.send({"type": "response.cancel"})
+                await self._send({"type": "deactivate"})
+                await self._send({"type": "user_transcript", "data": transcript})
+                return
             self._user_turn_ts = time.monotonic()
             # Reset each turn so a stale request can't recover on a later turn.
             self._pending_code_intent = (
@@ -269,6 +279,11 @@ class _QwenPump:
                 transcript if voice_intent.is_search_intent(transcript) else None
             )
             self._pending_messages = voice_intent.is_messages_intent(transcript)
+            self._pending_vision = (
+                transcript if voice_intent.is_vision_intent(transcript) else None
+            )
+            if self._pending_vision:  # vision wins over search on any ambiguity
+                self._pending_search = None
             await self._send({"type": "user_transcript", "data": transcript})
         elif ev_type == "input_audio_buffer.speech_started":
             LOG.info("vad: user speech started")
@@ -377,6 +392,15 @@ class _QwenPump:
             self.link.spawn_bg(
                 lambda: _run_bg_tool(self.link, self.bridge, "read_messages", {})
             )
+        # "look at this" → grab the camera frame and describe it (the app opens
+        # the live camera). The model often won't call `look`, so recover it.
+        if self._pending_vision:
+            q = self._pending_vision
+            self._pending_vision = None
+            LOG.info("recovering missed look: %r", q)
+            self.link.spawn_bg(
+                lambda: _run_bg_tool(self.link, self.bridge, "look", {"question": q})
+            )
 
     async def _barge_in(self) -> None:
         if not self.agent_started:
@@ -405,6 +429,8 @@ class _QwenPump:
                 self._pending_code_intent = None  # model handled it — no recovery
             elif name == "web_search":
                 self._pending_search = None  # model searched — no recovery
+            elif name == "look":
+                self._pending_vision = None  # model looked — no recovery
             await _handle_tool(self.link, self.bridge, item)
 
     async def _done(self, ev: dict) -> None:
