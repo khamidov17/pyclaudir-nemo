@@ -89,6 +89,10 @@ class ToolContext:
     app_origin_chats: set = field(default_factory=set)
     #: Phone action broker — set when NEMO_APP_TOKEN is configured.
     phone_broker: Any = None
+    #: Meeting-recording store (audio + transcripts). Lets the engine recall a
+    #: recorded meeting ("summarize what we recorded") via the recordings tools.
+    #: None when no data_dir is configured (tests).
+    recording_store: Any = None
     #: True when the current turn was started by a live user message; False for
     #: scheduler-fired (reminder/briefing) turns. Read actions (screenshot,
     #: ui_tree, camera) are refused when False so Nemo can never read the

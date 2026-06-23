@@ -50,6 +50,7 @@ from .nemo_router import NemoRouter, RouterConfig
 from .storage.memory import MemoryStore
 from .plugins import Plugins, load_plugins
 from .rate_limiter import RateLimiter
+from .recording_store import RecordingStore
 from .storage.render import RenderStore
 from .skills_store import SkillsStore
 from .telegram_io import TelegramDispatcher
@@ -618,6 +619,7 @@ async def _async_main() -> None:
         attachment_store=stores.attachments,
         render_store=stores.renders,
         chat_titles=chat_titles,
+        recording_store=RecordingStore(config.data_dir / "recordings"),
     )
 
     mcp = McpServer(

@@ -6,6 +6,7 @@ this package at startup. No registry edits required.
 
 from .fetch_url import FetchUrlTool
 from .phone_action import PhoneActionTool
+from .recordings import ListRecordingsTool, ReadTranscriptTool
 from .run_code import RunCodeTool
 from .search_memories import SearchMemoriesTool
 from .send_voice_message import SendVoiceMessageTool
@@ -13,7 +14,9 @@ from .synthesize_memory import SynthesizeMemoryWikiTool
 
 __all__ = [
     "FetchUrlTool",
+    "ListRecordingsTool",
     "PhoneActionTool",
+    "ReadTranscriptTool",
     "RunCodeTool",
     "SearchMemoriesTool",
     "SendVoiceMessageTool",

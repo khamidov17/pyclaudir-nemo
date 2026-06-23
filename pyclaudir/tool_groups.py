@@ -109,6 +109,22 @@ TOOL_MODULES: tuple[ToolModule, ...] = (
         tools=("mcp__pyclaudir__send_voice_message",),
     ),
     ToolModule(
+        name="recordings",
+        keywords=(
+            "recording",
+            "recorded",
+            "transcript",
+            "transcribe",
+            "meeting",
+            "summarize",
+            "recap",
+        ),
+        tools=(
+            "mcp__pyclaudir__list_recordings",
+            "mcp__pyclaudir__read_transcript",
+        ),
+    ),
+    ToolModule(
         name="query",
         keywords=("database", "query", "sql", "db", "history", "messages"),
         tools=("mcp__pyclaudir__query_db",),
