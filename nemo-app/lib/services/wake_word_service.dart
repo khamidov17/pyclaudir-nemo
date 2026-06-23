@@ -16,8 +16,10 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// (openWakeWord + Colab) and dropped into assets.
 class WakeWordService extends ChangeNotifier {
   static const _channel = MethodChannel('com.avazbek.nemo_app/wakeword');
-  // Placeholder wake model (assets/hey_jarvis_v0.1.onnx). Swap to the trained
-  // hey_nemo.onnx once available — only this constant changes.
+  // Placeholder wake model (assets/hey_jarvis_v0.1.onnx) — so today the wake
+  // phrase is "hey jarvis", not "hey nemo". Train a custom hey_nemo.onnx
+  // (see scripts/train_wakeword/README.md), drop it in assets/, and change this
+  // one constant to 'hey_nemo.onnx' (then re-tune _threshold below).
   static const _model = 'hey_jarvis_v0.1.onnx';
   // The placeholder "hey jarvis" model peaks ~0.39 for this device/voice (the
   // custom "hey nemo" model will score higher). 0.3 sits comfortably between

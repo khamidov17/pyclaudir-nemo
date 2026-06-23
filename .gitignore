@@ -57,3 +57,6 @@ nemo-app/ios/Flutter/ephemeral/
 node_modules/
 dist/
 build/
+
+# Agent worktrees (transient)
+.claude/worktrees/
