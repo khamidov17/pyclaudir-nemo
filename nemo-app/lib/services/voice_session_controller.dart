@@ -152,6 +152,12 @@ class VoiceSessionController extends ChangeNotifier {
       // down its own mic/socket; we must hand the mic back to "hey nemo" or the
       // wake word stays dead until the app restarts.
       _onSessionEnded();
+    } else if (signal == 'recording_started') {
+      _add('🔴 recording the meeting…');
+    } else if (signal == 'recording_stopped') {
+      _add('⏹ recording stopped — uploading');
+    } else if (signal == 'recording_uploaded') {
+      _add('✓ recording uploaded — transcribing');
     } else if (signal == 'deactivate') {
       // User said "shut up / go to sleep" → end the live session NOW and drop to
       // wake-word-only mode. stop() closes the mic/socket (no reconnect) and

@@ -1,8 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -49,6 +54,21 @@ class VoiceChatService extends ChangeNotifier {
   // the mic can never stay muted if a resume signal is ever lost.
   bool _muted = false;
   Timer? _muteWatchdog;
+
+  // Meeting recorder. Rather than open a SECOND microphone (Android allows only
+  // one capture consumer, so that would conflict with the live session), we TEE
+  // the PCM stream this session already captures into a .pcm file. On stop we
+  // wrap it in a WAV header and upload to the engine's /recording/upload (which
+  // transcribes server-side); the engine's read_transcript tool recalls it.
+  // This also means recording can run WHILE the conversation continues.
+  IOSink? _recSink;
+  String? _recPcmPath;
+  String? _recId;
+  int _recBytes = 0;
+  int _recStartMs = 0;
+  bool get isRecordingMeeting => _recSink != null;
+  static const int _recSampleRate = 16000; // matches the capture RecordConfig
+
   void setMuted(bool m) {
     _muted = m;
     _muteWatchdog?.cancel();
@@ -175,6 +195,12 @@ class VoiceChatService extends ChangeNotifier {
     notifyListeners();
 
     _recorderSub = stream.listen((chunk) {
+      // Meeting recorder tee: capture the full room audio continuously,
+      // independent of the half-duplex mute used for the live turn-taking.
+      if (_recSink != null && chunk.isNotEmpty) {
+        _recSink!.add(chunk);
+        _recBytes += chunk.length;
+      }
       if (_ws != null && chunk.isNotEmpty && !_muted) {
         final b64 = base64Encode(chunk);
         _ws!.sink.add(jsonEncode({'type': 'audio', 'data': b64}));
@@ -307,6 +333,16 @@ class VoiceChatService extends ChangeNotifier {
           // User said "shut up / go to sleep" — the controller ends the session
           // and hands the mic back to the on-device wake word (no reconnect).
           _controls.add('deactivate');
+        case 'record_start':
+          // Server-decided meeting recording: tee the mic to a file. Use the
+          // server-minted id so the later transcript recall matches.
+          _startMeetingRecording(
+            (data['id'] as String?)?.trim().isNotEmpty == true
+                ? data['id'] as String
+                : 'rec-${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+          );
+        case 'record_stop':
+          _stopMeetingRecordingAndUpload();
         case 'action':
           _actions.add(data);
         case 'error':
@@ -340,12 +376,133 @@ class VoiceChatService extends ChangeNotifier {
     return Uri(scheme: 'wss', host: host, port: voicePort);
   }
 
+  // ── Meeting recorder ───────────────────────────────────────────────────────
+
+  Future<void> _startMeetingRecording(String id) async {
+    if (_recSink != null) return; // already recording
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      _recPcmPath = '${dir.path}/meeting_$id.pcm';
+      _recSink = File(_recPcmPath!).openWrite();
+      _recId = id;
+      _recBytes = 0;
+      _recStartMs = DateTime.now().millisecondsSinceEpoch;
+      _controls.add('recording_started');
+      debugPrint('Meeting recording started: $_recPcmPath');
+    } catch (e) {
+      debugPrint('record_start failed: $e');
+      _recSink = null;
+      _recPcmPath = null;
+      _recId = null;
+    }
+  }
+
+  Future<void> _stopMeetingRecordingAndUpload() async {
+    final sink = _recSink;
+    final pcmPath = _recPcmPath;
+    final id = _recId;
+    final bytes = _recBytes;
+    final startMs = _recStartMs;
+    _recSink = null;
+    _recPcmPath = null;
+    _recId = null;
+    if (sink == null || pcmPath == null || id == null) return;
+    _controls.add('recording_stopped');
+    try {
+      await sink.flush();
+      await sink.close();
+      // Wrap the raw PCM in a WAV container (streamed copy — no whole-file load).
+      final wavPath = pcmPath.replaceFirst(RegExp(r'\.pcm$'), '.wav');
+      final wav = File(wavPath).openWrite();
+      wav.add(_wavHeader(bytes, _recSampleRate));
+      await wav.addStream(File(pcmPath).openRead());
+      await wav.flush();
+      await wav.close();
+      try {
+        await File(pcmPath).delete();
+      } catch (_) {}
+      await _uploadRecording(wavPath, id, startMs);
+    } catch (e) {
+      debugPrint('record_stop/upload failed: $e');
+    }
+  }
+
+  Future<void> _uploadRecording(String wavPath, String id, int startMs) async {
+    final serverUrl = (await _storage.read(key: 'server_url') ?? '').trim();
+    final token = await _storage.read(key: 'app_token') ?? '';
+    if (serverUrl.isEmpty || token.isEmpty) return;
+    // /recording/upload lives on the ENGINE (same base as updates), not the
+    // voice port. The engine uses a pinned self-signed cert, so go through
+    // SecureNet — a bare http client would fail TLS verification.
+    final httpBase = serverUrl
+        .replaceFirst('wss://', 'https://')
+        .replaceFirst('ws://', 'http://');
+    IOClient? client;
+    try {
+      client = IOClient(await SecureNet.httpClient());
+      final req = http.MultipartRequest(
+        'POST',
+        Uri.parse('$httpBase/recording/upload'),
+      )
+        ..fields['id'] = id
+        ..fields['token'] = token
+        ..fields['started_ms'] = startMs.toString()
+        ..fields['ended_ms'] = DateTime.now().millisecondsSinceEpoch.toString()
+        ..files.add(await http.MultipartFile.fromPath('file', wavPath));
+      final resp = await client.send(req).timeout(const Duration(minutes: 5));
+      if (resp.statusCode == 200) {
+        _controls.add('recording_uploaded');
+        debugPrint('Meeting recording uploaded: $id');
+      } else {
+        debugPrint('recording upload failed: ${resp.statusCode}');
+      }
+    } catch (e) {
+      debugPrint('recording upload error: $e');
+    } finally {
+      client?.close();
+    }
+  }
+
+  /// 44-byte canonical WAV header for mono PCM16 at [sampleRate], with
+  /// [dataLen] bytes of sample data following.
+  Uint8List _wavHeader(int dataLen, int sampleRate) {
+    const channels = 1;
+    const bitsPerSample = 16;
+    final byteRate = sampleRate * channels * bitsPerSample ~/ 8;
+    final blockAlign = channels * bitsPerSample ~/ 8;
+    final h = BytesBuilder();
+    void str(String s) => h.add(ascii.encode(s));
+    void u32(int v) =>
+        h.add((ByteData(4)..setUint32(0, v, Endian.little)).buffer.asUint8List());
+    void u16(int v) =>
+        h.add((ByteData(2)..setUint16(0, v, Endian.little)).buffer.asUint8List());
+    str('RIFF');
+    u32(36 + dataLen);
+    str('WAVE');
+    str('fmt ');
+    u32(16);
+    u16(1); // PCM
+    u16(channels);
+    u32(sampleRate);
+    u32(byteRate);
+    u16(blockAlign);
+    u16(bitsPerSample);
+    str('data');
+    u32(dataLen);
+    return h.toBytes();
+  }
+
   Future<void> stop() async {
     _active = false;
     _userStopping = true;
     _reconnecting = false;
     _reconnectTimer?.cancel();
     _reconnectAttempts = 0;
+    // Finalize an in-progress meeting recording before the mic tears down, so a
+    // session that ends mid-recording still uploads what was captured.
+    if (_recSink != null) {
+      await _stopMeetingRecordingAndUpload();
+    }
     await _recorderSub?.cancel();
     await _recorder?.stop();
     _recorder?.dispose();
