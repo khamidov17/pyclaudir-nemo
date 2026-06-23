@@ -54,6 +54,20 @@ _FUNCS: dict[str, Callable[..., Any]] = {
 # burn CPU / memory. Picked high enough for any legitimate query.
 _MAX_POW_EXPONENT = 1000
 
+# A single exponent cap is NOT enough: nested powers like ``(9**1000)**1000``
+# each pass the exponent check yet produce an astronomically large integer that
+# blocks the (non-sandboxed) engine process. So also bound the SIZE of every
+# intermediate integer result. 4096 bits (~1233 digits) is far beyond any real
+# calculator need and well short of a memory problem.
+_MAX_RESULT_BITS = 4096
+
+
+def _guard_size(value: Any) -> Any:
+    """Reject integer results large enough to threaten CPU/memory."""
+    if isinstance(value, int) and value.bit_length() > _MAX_RESULT_BITS:
+        raise CalculateError("result too large")
+    return value
+
 
 def _eval_node(node: ast.AST) -> Any:
     if isinstance(node, ast.Expression):
@@ -77,7 +91,7 @@ def _eval_node(node: ast.AST) -> Any:
         if op_type is ast.Pow and isinstance(right, (int, float)):
             if abs(right) > _MAX_POW_EXPONENT:
                 raise CalculateError("exponent too large")
-        return fn(left, right)
+        return _guard_size(fn(left, right))
 
     if isinstance(node, ast.UnaryOp):
         op_type = type(node.op)
