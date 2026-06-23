@@ -9,6 +9,9 @@ from voice_intent import (
     is_code_intent,
     is_deactivate_intent,
     is_messages_intent,
+    is_record_recall_intent,
+    is_record_start_intent,
+    is_record_stop_intent,
     is_search_intent,
     is_vision_intent,
 )
@@ -148,11 +151,15 @@ def test_vision_and_search_are_mutually_exclusive():
     [
         "shut up",
         "shutup",
+        "shut the fuck up",  # real transcript — filler between shut/up (prod bug)
+        "shut the hell up",
         "be quiet",
         "stop listening",
         "go to sleep",
         "sleep mode",
         "deactivate",
+        "deactivation",  # real transcript — STT gave the noun, not the verb
+        "act, deactivation",
         "turn yourself off",
         "leave me alone",
         "okay that's all nemo",
@@ -196,3 +203,73 @@ def test_deactivate_quiet_on_normal_requests(text):
 )
 def test_search_quiet_unless_asked(text):
     assert is_search_intent(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "record this",
+        "record this conversation",
+        "start recording",
+        "record the meeting",
+        "record our call",
+        "begin recording now",
+        "record everything",
+        "can you record this",
+    ],
+)
+def test_record_start_fires(text):
+    assert is_record_start_intent(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "stop recording",
+        "stop the recording",
+        "end recording",
+        "finish recording",
+        "okay we're done with the recording",
+        "wrap up the recording",
+    ],
+)
+def test_record_stop_fires(text):
+    assert is_record_stop_intent(text) is True
+    # stop must NOT also read as start
+    assert is_record_start_intent(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "summarize what we talked about",
+        "give me a recap of the meeting",
+        "send me the transcript",
+        "what did we discuss in the recording",
+        "read me the transcript",
+        "summarize the recording",
+        "what were we talking about earlier",
+    ],
+)
+def test_record_recall_fires(text):
+    assert is_record_recall_intent(text) is True
+    # recall must NOT read as a fresh start
+    assert is_record_start_intent(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # must NOT start/stop a recording
+        "stop the timer",
+        "stop the music",
+        "what's the weather",
+        "set a reminder",
+        "how are you",
+        "play some music",
+        "",
+    ],
+)
+def test_record_quiet_on_unrelated(text):
+    assert is_record_start_intent(text) is False
+    assert is_record_stop_intent(text) is False

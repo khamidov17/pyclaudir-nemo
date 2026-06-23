@@ -119,14 +119,16 @@ def is_vision_intent(text: str) -> bool:
 # mode (no more dialog listening). Bare "stop" is deliberately NOT here (it
 # collides with "stop the timer"); the user has clear phrases below.
 _DEACTIVATE_PATTERNS = [
-    re.compile(r"\bshut\s*up\b", re.I),
+    # "shut up", "shutup", "shut the fuck/hell up" (≤2 filler words between).
+    re.compile(r"\bshut\s*(\w+\s+){0,2}up\b", re.I),
     re.compile(r"\bbe\s+quiet\b", re.I),
     re.compile(r"\bstop\s+(listening|talking)\b", re.I),
     re.compile(
         r"\b(go\s+to\s+sleep|sleep\s+(mode|now)|go\s+(quiet|away|to\s+sleep))\b", re.I
     ),
     re.compile(
-        r"\b(deactivate|turn\s+(yourself\s+)?off|power\s+down|stand\s+down)\b", re.I
+        r"\b(deactivat(e|ion)|turn\s+(yourself\s+)?off|power\s+down|stand\s+down)\b",
+        re.I,
     ),
     re.compile(r"\bleave\s+me\s+alone\b", re.I),
     re.compile(
@@ -143,6 +145,49 @@ def is_deactivate_intent(text: str) -> bool:
     if len(t) < 3:
         return False
     return any(p.search(t) for p in _DEACTIVATE_PATTERNS)
+
+
+# Meeting recorder. START hands the phone's mic to a room-tuned recorder; STOP
+# finalizes + uploads for transcription; RECALL asks the engine brain (which has
+# the dated transcript on disk) to summarize / send it / answer a question.
+# STOP is checked before START so "stop recording" never reads as a start.
+_RECORD_STOP = re.compile(
+    r"\b(stop|end|finish|done(\s+with)?|wrap\s+up)\b[^.?!]*\brecord(ing)?\b", re.I
+)
+_RECORD_START = re.compile(
+    r"\b(start|begin)\s+recording\b|"
+    r"\b(record|tape)\b[^.?!]*?\b"
+    r"(this|that|us|it|now|meeting|conversation|call|voice|audio|chat|everything)\b",
+    re.I,
+)
+# Recall words must NOT trigger START ("summarize the recording" is recall).
+_RECORD_RECALL = re.compile(
+    r"\b(summari[sz]e|summary|recap|transcript|what\s+did\s+we|what\s+were\s+we|"
+    r"send\s+me|read\s+me|give\s+me|show\s+me|what\s+was)\b[^.?!]*?\b"
+    r"(record(ing|ed)?|transcript|talk(ed|ing)?\s+about|discuss(ed|ing)?|"
+    r"conversation|meeting)\b",
+    re.I,
+)
+
+
+def is_record_stop_intent(text: str) -> bool:
+    """True when the user told Nemo to stop the current recording."""
+    t = (text or "").strip()
+    return len(t) >= 4 and bool(_RECORD_STOP.search(t))
+
+
+def is_record_start_intent(text: str) -> bool:
+    """True when the user asked Nemo to start recording — not stop or recall."""
+    t = (text or "").strip()
+    if len(t) < 4 or _RECORD_STOP.search(t) or _RECORD_RECALL.search(t):
+        return False
+    return bool(_RECORD_START.search(t))
+
+
+def is_record_recall_intent(text: str) -> bool:
+    """True when the user asked about a past recording (summary/transcript/Q&A)."""
+    t = (text or "").strip()
+    return len(t) >= 4 and bool(_RECORD_RECALL.search(t))
 
 
 async def recover_delegate(link, bridge, task: str) -> None:

@@ -230,6 +230,11 @@ class _QwenPump:
         self._pending_messages: bool = False
         # "look at this" → camera: the user's question, if a vision request.
         self._pending_vision: str | None = None
+        # "summarize what we recorded / send the transcript" → delegate to the
+        # engine brain (it holds the dated transcript). Recovery-only: the voice
+        # model just says "on it"; the engine speaks the content, so a meeting's
+        # words never pass through the voice model (no journaling/leak risk).
+        self._pending_recall: str | None = None
         # Latched (from link.sensitive_next) the moment THIS reply starts, so a
         # message-summary's privacy flag is bound to the right reply and can't be
         # consumed by an interleaved turn on the full-duplex link.
@@ -259,32 +264,7 @@ class _QwenPump:
             self._reply += ev.get("delta", "")
             await self._send({"type": "text", "data": ev.get("delta", "")})
         elif ev_type == "conversation.item.input_audio_transcription.completed":
-            transcript = ev.get("transcript", "")
-            LOG.info("user said: %r", transcript)
-            voice_history.add("user", transcript)
-            if voice_intent.is_deactivate_intent(transcript):
-                # "shut up / go to sleep" → end the session NOW; the app drops to
-                # wake-word-only (local) mode. Cancel any reply so Nemo goes quiet.
-                LOG.info("deactivate on request — session to sleep")
-                await self.link.send({"type": "response.cancel"})
-                await self._send({"type": "deactivate"})
-                await self._send({"type": "user_transcript", "data": transcript})
-                return
-            self._user_turn_ts = time.monotonic()
-            # Reset each turn so a stale request can't recover on a later turn.
-            self._pending_code_intent = (
-                transcript if voice_intent.is_code_intent(transcript) else None
-            )
-            self._pending_search = (
-                transcript if voice_intent.is_search_intent(transcript) else None
-            )
-            self._pending_messages = voice_intent.is_messages_intent(transcript)
-            self._pending_vision = (
-                transcript if voice_intent.is_vision_intent(transcript) else None
-            )
-            if self._pending_vision:  # vision wins over search on any ambiguity
-                self._pending_search = None
-            await self._send({"type": "user_transcript", "data": transcript})
+            await self._on_user_transcript(ev.get("transcript", ""))
         elif ev_type == "input_audio_buffer.speech_started":
             LOG.info("vad: user speech started")
             await self._barge_in()
@@ -294,6 +274,51 @@ class _QwenPump:
             await self._done(ev)
         elif ev_type == "error":
             await self._error(ev)
+
+    async def _on_user_transcript(self, transcript: str) -> None:
+        """A finished user turn: deactivate / record controls, then arm the
+        per-turn recovery intents and forward the transcript to the app."""
+        LOG.info("user said: %r", transcript)
+        voice_history.add("user", transcript)
+        if voice_intent.is_deactivate_intent(transcript):
+            # "shut up / go to sleep" → end the session NOW; the app drops to
+            # wake-word-only (local) mode. Cancel any reply so Nemo goes quiet.
+            LOG.info("deactivate on request — session to sleep")
+            await self.link.send({"type": "response.cancel"})
+            await self._send({"type": "deactivate"})
+            await self._send({"type": "user_transcript", "data": transcript})
+            return
+        # Meeting recorder: start/stop are deterministic CONTROLS to the app (the
+        # phone owns the mic + foreground recorder). Nemo still voices a brief
+        # confirmation (shaped by the system prompt), so don't return.
+        if voice_intent.is_record_stop_intent(transcript):
+            LOG.info("record stop on request")
+            await self._send({"type": "record_stop"})
+        elif voice_intent.is_record_start_intent(transcript):
+            LOG.info("record start on request")
+            await self._send({"type": "record_start", "id": f"rec-{int(time.time())}"})
+        self._user_turn_ts = time.monotonic()
+        self._arm_intents(transcript)
+        await self._send({"type": "user_transcript", "data": transcript})
+
+    def _arm_intents(self, transcript: str) -> None:
+        """Set per-turn recovery flags. Reset every turn so a stale request can't
+        recover on a later one."""
+        self._pending_code_intent = (
+            transcript if voice_intent.is_code_intent(transcript) else None
+        )
+        self._pending_search = (
+            transcript if voice_intent.is_search_intent(transcript) else None
+        )
+        self._pending_messages = voice_intent.is_messages_intent(transcript)
+        self._pending_vision = (
+            transcript if voice_intent.is_vision_intent(transcript) else None
+        )
+        if self._pending_vision:  # vision wins over search on any ambiguity
+            self._pending_search = None
+        self._pending_recall = (
+            transcript if voice_intent.is_record_recall_intent(transcript) else None
+        )
 
     async def _send(self, msg: dict) -> None:
         async with self._send_lock:
@@ -365,41 +390,45 @@ class _QwenPump:
                 voice_history.add("nemo", self._reply)
             self._reply = ""
         self._reply_sensitive = False
-        # The model finished but never delegated a clear code request → recover.
+        self._run_recoveries()
+
+    def _run_recoveries(self) -> None:
+        """Fire any must-do tool the model finished the turn without calling.
+        Each clears its flag first so it can never run twice."""
         if self._pending_code_intent:
-            task = self._pending_code_intent
-            self._pending_code_intent = None
+            task, self._pending_code_intent = self._pending_code_intent, None
             LOG.info("recovering missed code delegation")
             self.link.spawn_bg(
                 lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
             )
-        # The model said "on it" but never searched → run the search ourselves
-        # and speak the result (reuses the background-tool path + its fallback).
         if self._pending_search:
-            query = self._pending_search
-            self._pending_search = None
+            query, self._pending_search = self._pending_search, None
             LOG.info("recovering missed web_search: %r", query)
             self.link.spawn_bg(
                 lambda: _run_bg_tool(
                     self.link, self.bridge, "web_search", {"query": query}
                 )
             )
-        # Explicit "check my messages" → fetch + summarize. read_messages is NOT a
-        # model tool, so this recovery is the ONLY way it fires (explicit-only).
+        # read_messages is NOT a model tool, so this recovery is the ONLY way it
+        # fires (explicit-only).
         if self._pending_messages:
             self._pending_messages = False
             LOG.info("fetching messages on explicit request")
             self.link.spawn_bg(
                 lambda: _run_bg_tool(self.link, self.bridge, "read_messages", {})
             )
-        # "look at this" → grab the camera frame and describe it (the app opens
-        # the live camera). The model often won't call `look`, so recover it.
         if self._pending_vision:
-            q = self._pending_vision
-            self._pending_vision = None
+            q, self._pending_vision = self._pending_vision, None
             LOG.info("recovering missed look: %r", q)
             self.link.spawn_bg(
                 lambda: _run_bg_tool(self.link, self.bridge, "look", {"question": q})
+            )
+        # Recording recall → the engine brain (it holds the dated transcript).
+        if self._pending_recall:
+            task, self._pending_recall = self._pending_recall, None
+            LOG.info("recovering recording recall → engine: %r", task)
+            self.link.spawn_bg(
+                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
             )
 
     async def _barge_in(self) -> None:
@@ -427,6 +456,7 @@ class _QwenPump:
             name = item.get("name")
             if name == "delegate_task":
                 self._pending_code_intent = None  # model handled it — no recovery
+                self._pending_recall = None  # model already delegated the recall
             elif name == "web_search":
                 self._pending_search = None  # model searched — no recovery
             elif name == "look":

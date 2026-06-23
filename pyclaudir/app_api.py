@@ -24,6 +24,7 @@ from pathlib import Path
 from fastapi.responses import FileResponse
 from .models import ChatMessage
 from .phone_broker import PhoneBroker
+from .recording_store import RecordingStore, SaveOpts
 from .tools.base import ToolContext
 
 log = logging.getLogger("pyclaudir.app_api")
@@ -35,6 +36,13 @@ def _next_msg_id() -> int:
     global _MSG_COUNTER
     _MSG_COUNTER -= 1
     return _MSG_COUNTER
+
+
+def _to_int(value: object) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 class AppApiServer:
@@ -55,6 +63,9 @@ class AppApiServer:
         self._data_dir = data_dir
         self._engine: object | None = None
         self._server: uvicorn.Server | None = None
+        # Whole-room meeting recordings (audio + dated transcript). Off when no
+        # data_dir (tests/standalone).
+        self._recordings = RecordingStore(data_dir / "recordings") if data_dir else None
         # Dedicated token for the inbound webhook (POST /hook). Separate from the
         # app token so the owner can hand it to external services (CI, IFTTT, a
         # script) without exposing phone control. Endpoint is off when unset.
@@ -271,6 +282,35 @@ class AppApiServer:
                 self._engine.reminder_kick.set()  # type: ignore[union-attr]
             return {"status": "kicked"}
 
+        @app.post("/recording/upload")
+        async def recording_upload(request: Request) -> dict:
+            """Phone uploads a finished meeting recording (multipart). Saves it,
+            returns immediately, and transcribes (Groq Whisper) in the background.
+
+            Form fields: ``file`` (audio), ``id``, ``started_ms``, ``ended_ms``.
+            App-token authed (header or ``token`` form field)."""
+            from fastapi import HTTPException
+
+            form = await request.form()
+            if not _auth(request, str(form.get("token", ""))):
+                raise HTTPException(401, "unauthorized")
+            if self._recordings is None:
+                raise HTTPException(503, "recordings unavailable")
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise HTTPException(400, "missing 'file'")
+            rec_id = str(form.get("id") or "").strip() or f"rec-{int(time.time())}"
+            audio = await upload.read()  # type: ignore[union-attr]
+            opts = SaveOpts(
+                audio_name=getattr(upload, "filename", "audio.m4a") or "audio.m4a",
+                started_ms=_to_int(form.get("started_ms")),
+                ended_ms=_to_int(form.get("ended_ms")),
+            )
+            meta = self._recordings.save_audio(rec_id, audio, opts)
+            asyncio.create_task(self._transcribe(rec_id), name=f"stt-{rec_id}")
+            log.info("recording upload id=%s %d bytes", rec_id, meta.audio_bytes)
+            return {"status": "saved", "id": rec_id, "bytes": meta.audio_bytes}
+
         @app.websocket("/ws")
         async def ws_endpoint(websocket: WebSocket, device_id: str = "") -> None:
             # Accept first, then authenticate via first message (token not in URL)
@@ -320,6 +360,22 @@ class AppApiServer:
                 )
 
         return app
+
+    async def _transcribe(self, rec_id: str) -> None:
+        """Background: Groq Whisper over the uploaded audio → dated transcript."""
+        if self._recordings is None:
+            return
+        path = self._recordings.audio_path(rec_id)
+        if path is None:
+            return
+        from . import stt
+
+        text = await stt.transcribe(path)
+        if text:
+            self._recordings.set_transcript(rec_id, text)
+            log.info("recording %s transcribed (%d chars)", rec_id, len(text))
+        else:
+            log.warning("recording %s transcription unavailable", rec_id)
 
     async def _dispatch(self, data: dict, device_id: str, websocket: WebSocket) -> None:
         msg_type = data.get("type", "message")
