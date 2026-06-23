@@ -51,3 +51,46 @@ async def test_actions_allowed_even_on_scheduler_turn() -> None:
     tool = PhoneActionTool(ToolContext(phone_broker=broker, user_initiated=False))
     await tool.run(PhoneActionArgs(command="open org.telegram.messenger"))
     assert broker.calls == ["open org.telegram.messenger"]
+
+
+@pytest.mark.asyncio
+async def test_media_actions_dispatch() -> None:
+    broker = _FakeBroker()
+    tool = PhoneActionTool(ToolContext(phone_broker=broker, user_initiated=True))
+    for action in ("play_pause", "next", "previous", "volume_up", "mute"):
+        r = await tool.run(PhoneActionArgs(command=f"media {action}"))
+        assert r.is_error is False
+    assert broker.calls == [
+        "media play_pause",
+        "media next",
+        "media previous",
+        "media volume_up",
+        "media mute",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_media_unknown_action_rejected() -> None:
+    broker = _FakeBroker()
+    tool = PhoneActionTool(ToolContext(phone_broker=broker, user_initiated=True))
+    r = await tool.run(PhoneActionArgs(command="media explode"))
+    assert r.is_error is True and "unknown media action" in r.content
+    assert broker.calls == []  # never reached the device
+
+
+@pytest.mark.asyncio
+async def test_call_needs_target() -> None:
+    broker = _FakeBroker()
+    tool = PhoneActionTool(ToolContext(phone_broker=broker, user_initiated=True))
+    r = await tool.run(PhoneActionArgs(command="call"))
+    assert r.is_error is True and "needs a number or contact" in r.content
+    assert broker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_call_with_target_dispatches() -> None:
+    broker = _FakeBroker()
+    tool = PhoneActionTool(ToolContext(phone_broker=broker, user_initiated=True))
+    r = await tool.run(PhoneActionArgs(command="call Aziz"))
+    assert r.is_error is False
+    assert broker.calls == ["call Aziz"]

@@ -36,6 +36,8 @@ _VALID_COMMANDS = frozenset(
         "type",
         "press",
         "open",
+        "media",
+        "call",
     ]
 )
 
@@ -45,6 +47,25 @@ _PRESS_MAP = {"back": "back", "home": "home", "recents": "recents"}
 # response to a live user request — never on a scheduler-fired (briefing/
 # reminder) turn — so Nemo can't capture the phone on its own.
 _READ_VERBS = frozenset({"screenshot", "ui_tree", "camera"})
+
+# Media transport actions accepted by the `media` verb — they map to the
+# device's AudioManager media-key / volume handling.
+_MEDIA_ACTIONS = frozenset(
+    {
+        "play",
+        "pause",
+        "play_pause",
+        "playpause",
+        "toggle",
+        "next",
+        "previous",
+        "prev",
+        "stop",
+        "volume_up",
+        "volume_down",
+        "mute",
+    }
+)
 
 
 class PhoneActionArgs(BaseModel):
@@ -99,6 +120,28 @@ class PhoneActionTool(BaseTool):
                     "Avazbek explicitly asks — not during a reminder or on your own."
                 ),
                 is_error=False,
+            )
+
+        # Validate `media <action>` against the allowlist so a typo isn't sent
+        # to the device as an opaque command.
+        if verb == "media":
+            parts = cmd.split()
+            action = parts[1].lower() if len(parts) > 1 else ""
+            if action not in _MEDIA_ACTIONS:
+                return ToolResult(
+                    content=(
+                        f"unknown media action '{action}'. valid: "
+                        f"{', '.join(sorted(_MEDIA_ACTIONS))}"
+                    ),
+                    is_error=True,
+                )
+
+        # `call <number-or-contact>` needs a target. The device opens the dialer
+        # pre-filled (safe default — the owner taps to place the call).
+        if verb == "call" and len(cmd.split()) < 2:
+            return ToolResult(
+                content="call needs a number or contact name, e.g. 'call Aziz'",
+                is_error=True,
             )
 
         log.info("phone_action: %r", cmd[:80])
