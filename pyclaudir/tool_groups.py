@@ -130,6 +130,29 @@ TOOL_MODULES: tuple[ToolModule, ...] = (
         tools=("mcp__pyclaudir__query_db",),
     ),
     ToolModule(
+        name="assistant_tools",
+        keywords=(
+            "calculate",
+            "calculator",
+            "compute",
+            "math",
+            "arithmetic",
+            "convert",
+            "conversion",
+            "units",
+            "timezone",
+            "time zone",
+            "time in",
+            "world time",
+            "what time",
+        ),
+        tools=(
+            "mcp__pyclaudir__calculate",
+            "mcp__pyclaudir__convert_units",
+            "mcp__pyclaudir__world_time",
+        ),
+    ),
+    ToolModule(
         name="web",
         keywords=(
             "search",

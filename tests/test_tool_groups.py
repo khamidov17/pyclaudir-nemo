@@ -52,3 +52,18 @@ def test_render_detected() -> None:
 def test_web_detected() -> None:
     result = detect_extra_tools("search online for news")
     assert "WebSearch" in result
+
+
+def test_calculate_detected() -> None:
+    result = detect_extra_tools("calculate 2 + 2 for me")
+    assert "mcp__pyclaudir__calculate" in result
+
+
+def test_convert_detected() -> None:
+    result = detect_extra_tools("convert 5 km to miles")
+    assert "mcp__pyclaudir__convert_units" in result
+
+
+def test_world_time_detected() -> None:
+    result = detect_extra_tools("what time is it in Tokyo")
+    assert "mcp__pyclaudir__world_time" in result
