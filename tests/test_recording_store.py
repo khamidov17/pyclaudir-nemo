@@ -6,9 +6,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 from pyclaudir.app_api import AppApiServer
 from pyclaudir.phone_broker import PhoneBroker
-from pyclaudir.recording_store import RecordingStore, SaveOpts
+from pyclaudir.recording_store import RecordingStore, SaveOpts, is_safe_rec_id
 from pyclaudir.tools.base import ToolContext
 
 
@@ -66,3 +68,31 @@ def test_upload_saves_and_returns_fast(tmp_path: Path) -> None:
     body = resp.json()
     assert body["id"] == "r1" and body["bytes"] == 10
     assert (tmp_path / "recordings" / "r1" / "a.m4a").read_bytes() == b"audiobytes"
+
+
+@pytest.mark.parametrize(
+    "bad_id",
+    ["../evil", "../../etc/x", "a/b", "..", ".", "with space", "semi;colon", ""],
+)
+def test_store_rejects_traversal_ids(tmp_path: Path, bad_id: str) -> None:
+    store = RecordingStore(tmp_path)
+    assert is_safe_rec_id(bad_id) is False
+    with pytest.raises(ValueError):
+        store.save_audio(bad_id, b"x", SaveOpts("a.m4a", 0, 1000))
+
+
+def test_upload_rejects_traversal_id(tmp_path: Path) -> None:
+    client = TestClient(_server(tmp_path).app)
+    resp = client.post(
+        "/recording/upload",
+        data={"id": "../../pwned", "started_ms": "0", "ended_ms": "1", "token": "tok"},
+        files={"file": ("a.m4a", b"audio", "audio/mp4")},
+    )
+    assert resp.status_code == 400
+    # Nothing was written outside the recordings root.
+    assert not (tmp_path.parent / "pwned").exists()
+
+
+def test_safe_rec_ids_accepted() -> None:
+    for ok in ["rec-1718900000", "r1", "meeting_2026-06-24", "ABC.def"]:
+        assert is_safe_rec_id(ok) is True

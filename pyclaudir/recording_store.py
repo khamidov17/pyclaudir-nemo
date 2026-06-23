@@ -14,9 +14,20 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+# A recording id is used as a single path segment (``<root>/<id>/``) and comes
+# from the upload form, so it is attacker-influenced. Restrict it to a safe
+# charset and forbid the directory-traversal names so it can never escape root.
+_SAFE_REC_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def is_safe_rec_id(rec_id: str) -> bool:
+    """True if ``rec_id`` is safe to use as a path segment (no traversal)."""
+    return bool(rec_id) and rec_id not in (".", "..") and bool(_SAFE_REC_ID.match(rec_id))
 
 log = logging.getLogger("pyclaudir.recording_store")
 
@@ -63,6 +74,10 @@ class RecordingStore:
         self._root.mkdir(parents=True, exist_ok=True)
 
     def _dir(self, rec_id: str) -> Path:
+        # Guard every path built from a rec_id (save, read, transcript, get) at
+        # this single choke point — reject anything that could escape the root.
+        if not is_safe_rec_id(rec_id):
+            raise ValueError(f"invalid recording id: {rec_id!r}")
         return self._root / rec_id
 
     def save_audio(self, rec_id: str, audio: bytes, opts: "SaveOpts") -> RecordingMeta:

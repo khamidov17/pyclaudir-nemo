@@ -24,7 +24,7 @@ from pathlib import Path
 from fastapi.responses import FileResponse
 from .models import ChatMessage
 from .phone_broker import PhoneBroker
-from .recording_store import RecordingStore, SaveOpts
+from .recording_store import RecordingStore, SaveOpts, is_safe_rec_id
 from .tools.base import ToolContext
 
 log = logging.getLogger("pyclaudir.app_api")
@@ -300,6 +300,9 @@ class AppApiServer:
             if upload is None or not hasattr(upload, "read"):
                 raise HTTPException(400, "missing 'file'")
             rec_id = str(form.get("id") or "").strip() or f"rec-{int(time.time())}"
+            if not is_safe_rec_id(rec_id):
+                # Attacker-influenced path segment — reject traversal/odd ids.
+                raise HTTPException(400, "invalid recording id")
             audio = await upload.read()  # type: ignore[union-attr]
             opts = SaveOpts(
                 audio_name=getattr(upload, "filename", "audio.m4a") or "audio.m4a",
