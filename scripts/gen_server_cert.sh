@@ -9,7 +9,9 @@
 # and switch the app's Server URL to wss://IP:8765.
 set -euo pipefail
 
-IP="${1:-165.140.240.169}"
+# Pass the server's public IP explicitly — don't bake a deployment address into
+# the repo. Usage: scripts/gen_server_cert.sh <server-ip> [out-dir]
+IP="${1:?usage: gen_server_cert.sh <server-ip> [out-dir]   (e.g. 203.0.113.10)}"
 OUT_DIR="${2:-$(pwd)/certs}"
 mkdir -p "$OUT_DIR"
 

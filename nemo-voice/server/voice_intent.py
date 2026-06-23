@@ -134,7 +134,17 @@ _DEACTIVATE_PATTERNS = [
     re.compile(
         r"\b(that'?s\s+all|we'?re\s+done|i'?m\s+done|goodbye|bye)\b.{0,8}\bnemo\b", re.I
     ),
-    re.compile(r"\bnemo\b.{0,8}\b(shut\s*up|go\s+to\s+sleep|stop|quiet)\b", re.I),
+    # "nemo, stop/shut up/quiet" — but a bare "stop" here must NOT swallow
+    # "nemo, stop the timer/alarm/music/recording" (those are actions, not a
+    # request to end the session). The negative lookahead keeps the original
+    # collision (deliberately excluded for bare "stop" above) from sneaking back
+    # in via the nemo-prefixed form.
+    re.compile(
+        r"\bnemo\b.{0,8}\b(shut\s*up|go\s+to\s+sleep|quiet|"
+        r"stop(?!\s+(the\s+)?(timer|alarm|music|song|recording|reminder|"
+        r"playback|video|playing|audio|track|podcast|news|noise)s?\b))\b",
+        re.I,
+    ),
 ]
 
 
@@ -198,11 +208,8 @@ async def recover_delegate(link, bridge, task: str) -> None:
         await voice_brain.dispatch("delegate_task", {"task": task}, bridge)
     except Exception:  # noqa: BLE001 — never crash the turn over a recovery
         return
-    # Land at a conversation gap (don't cut into a new turn); drop if closed.
-    await link.wait_until_idle()
-    if link.closed:
-        return
-    await link.inject_text(
+    # Land at a conversation gap, atomically (drop if the session closed first).
+    await link.inject_text_when_idle(
         "[You were asked to run code but didn't hand it off — it's now running on "
         "your engine brain. Tell Avazbek briefly you're on it and will have the "
         "result shortly.]"

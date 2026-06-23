@@ -17,6 +17,7 @@ import os
 import sqlite3
 import ssl
 import threading
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -131,6 +132,12 @@ def _kick_engine() -> None:
     port = os.environ.get("NEMO_APP_PORT", "8765").strip() or "8765"
     url = os.environ.get("NEMO_KICK_URL", f"https://127.0.0.1:{port}/internal/kick")
 
+    # Disabling cert verification is only safe on loopback (the self-signed
+    # localhost cert). If NEMO_KICK_URL is ever pointed at a real host, keep
+    # verification ON so the bearer token can't be handed to a MITM.
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    is_loopback = host in ("127.0.0.1", "::1", "localhost")
+
     def _post() -> None:
         try:
             req = urllib.request.Request(
@@ -142,8 +149,9 @@ def _kick_engine() -> None:
             ctx = None
             if url.startswith("https"):
                 ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE  # self-signed localhost cert
+                if is_loopback:
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE  # self-signed localhost cert
             urllib.request.urlopen(req, timeout=2, context=ctx)
         except Exception:  # noqa: BLE001 — the engine poll is the fallback
             pass

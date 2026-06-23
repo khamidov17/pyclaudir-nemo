@@ -499,8 +499,17 @@ async def _serve_client_http(ssl_ctx=None):
             else "text/plain",
         )
 
-    async def health(_request):
-        return web.json_response({**METRICS.snapshot(), "backend": VOICE_BACKEND})
+    async def health(request):
+        # Liveness is unauthenticated so a probe / load balancer gets a cheap
+        # 200. Operational metrics (session counts, latencies) require the app
+        # token — on an internet-exposed port they should not be readable by
+        # anyone who hits /health.
+        token = os.environ.get("NEMO_APP_TOKEN", "").strip()
+        auth = request.headers.get("Authorization", "")
+        provided = auth[7:] if auth.startswith("Bearer ") else ""
+        if token and hmac.compare_digest(provided, token):
+            return web.json_response({**METRICS.snapshot(), "backend": VOICE_BACKEND})
+        return web.json_response({"status": "ok"})
 
     app = web.Application()
     app.router.add_get("/", index)

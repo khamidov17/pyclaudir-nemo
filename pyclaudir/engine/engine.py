@@ -164,6 +164,13 @@ class Engine:
         #: loop) sees the reminder still ``pending`` and retries on the
         #: next 60s tick.
         self._turn_callbacks: list[Callable[[], Awaitable[None]]] = []
+        #: Symmetric ``on_failure`` hooks. Fired (not dropped) when the turn
+        #: fails, so a caller that moved its row to an in-flight state on submit
+        #: (the reminder loop's ``firing`` claim) can roll it back. Queued and
+        #: drained exactly like the success hooks; cleared without firing on a
+        #: clean turn.
+        self._pending_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
+        self._turn_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
         self._lock = asyncio.Lock()
         self._is_processing = asyncio.Event()
         self._debounce_task: asyncio.Task[None] | None = None
@@ -199,6 +206,8 @@ class Engine:
         # loop, which is the right behaviour for a clean shutdown.
         self._pending_callbacks = []
         self._turn_callbacks = []
+        self._pending_failure_callbacks = []
+        self._turn_failure_callbacks = []
 
     # ------------------------------------------------------------------
     # Inbound
@@ -209,6 +218,7 @@ class Engine:
         msg: ChatMessage,
         *,
         on_success: Callable[[], Awaitable[None]] | None = None,
+        on_failure: Callable[[], Awaitable[None]] | None = None,
         runtime_profile: dict | None = None,
     ) -> None:
         """Add an inbound message to the pending buffer.
@@ -232,6 +242,8 @@ class Engine:
             self._pending_runtime_profiles.append(runtime_profile)
             if on_success is not None:
                 self._pending_callbacks.append(on_success)
+            if on_failure is not None:
+                self._pending_failure_callbacks.append(on_failure)
 
         if self._is_processing.is_set():
             await self._maybe_inject()
@@ -258,6 +270,8 @@ class Engine:
             self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
+            self._turn_failure_callbacks.extend(self._pending_failure_callbacks)
+            self._pending_failure_callbacks = []
             self._is_processing.set()
         # Skip synthetic reminders (mid=0) — no human waiting on them, so
         # the turn-start typing indicator should be silent for
@@ -349,6 +363,8 @@ class Engine:
             self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
+            self._turn_failure_callbacks.extend(self._pending_failure_callbacks)
+            self._pending_failure_callbacks = []
         xml = await format_messages_with_context(batch, self._db)
         await self._worker.inject(xml)
 
@@ -748,6 +764,16 @@ class Engine:
                 len(self._turn_callbacks),
             )
             self._turn_callbacks = []
+        # Fire the failure hooks so a caller that marked its row in-flight on
+        # submit (the reminder loop's ``firing`` claim) rolls it back to
+        # ``pending`` and the next tick re-fires it — see #22.
+        failure_callbacks = self._turn_failure_callbacks
+        self._turn_failure_callbacks = []
+        for cb in failure_callbacks:
+            try:
+                await cb()
+            except Exception:
+                log.exception("turn-failure callback failed")
         await self._notify_error_to_chats(
             "⚠️ Sorry, I ran into a temporary issue. "
             "I'm restarting and will be back in a few seconds."
@@ -792,6 +818,8 @@ class Engine:
         """
         callbacks = self._turn_callbacks
         self._turn_callbacks = []
+        # The turn succeeded — the matching failure hooks must NOT run.
+        self._turn_failure_callbacks = []
         for cb in callbacks:
             try:
                 await cb()

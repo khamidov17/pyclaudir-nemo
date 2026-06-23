@@ -181,10 +181,29 @@ def test_deactivate_fires_on_off_commands(text):
         "stop the music",  # not 'stop listening/talking'
         "how are you",
         "",
+        # nemo-prefixed actions must NOT end the session (prod bug: the
+        # `nemo .{0,8} stop` pattern used to swallow these as deactivate).
+        "nemo, stop the timer",
+        "nemo stop the alarm",
+        "nemo, stop the music",
+        "nemo stop the recording",
+        "nemo, stop the reminder",
     ],
 )
 def test_deactivate_quiet_on_normal_requests(text):
     assert is_deactivate_intent(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # a bare nemo-prefixed "stop" (no action object) still means "be quiet"
+        "nemo, stop",
+        "nemo stop talking",
+    ],
+)
+def test_deactivate_still_fires_on_bare_nemo_stop(text):
+    assert is_deactivate_intent(text) is True
 
 
 @pytest.mark.parametrize(

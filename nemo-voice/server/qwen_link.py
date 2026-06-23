@@ -26,6 +26,15 @@ from collections.abc import Awaitable, Callable
 LOG = logging.getLogger("nemo.qwen_link")
 
 
+def _text_item(text: str) -> dict:
+    """A user-role text conversation item."""
+    return {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": text}],
+    }
+
+
 class QwenLink:
     """Owns one Qwen realtime socket for the lifetime of a single session."""
 
@@ -87,13 +96,43 @@ class QwenLink:
 
     async def inject_text(self, text: str) -> None:
         """Inject a user-role text turn and let Nemo respond to it."""
-        await self.respond_to(
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            }
-        )
+        await self.respond_to(_text_item(text))
+
+    async def respond_to_when_idle(self, item: dict, *, sensitive: bool = False) -> bool:
+        """Like :meth:`respond_to`, but wait for a conversation gap first AND
+        re-check idle *under the send lock* before firing.
+
+        ``wait_until_idle()`` followed by a separate ``respond_to`` is racy: a
+        reply can start in the gap between the two, so Qwen is mid-response when
+        our ``response.create`` lands and silently drops it (the background
+        answer is lost). Holding the send lock while we confirm we're still idle
+        closes that window. Returns False if the session closed before a gap
+        opened (caller can fall back to the engine path).
+
+        ``sensitive`` arms :attr:`sensitive_next` under the same lock, right
+        before this exact ``response.create`` — so the privacy flag is bound as
+        tightly as possible to the reply we're about to trigger (the pump then
+        pins it to that response's id)."""
+        while not self._closed:
+            await self._idle.wait()
+            async with self._send_lock:
+                if self._closed:
+                    return False
+                if not self._idle.is_set():
+                    continue  # a reply slipped in between the wait and the lock
+                if sensitive:
+                    self.sensitive_next = True
+                await self._qwen.send(
+                    json.dumps({"type": "conversation.item.create", "item": item})
+                )
+                await self._qwen.send(json.dumps({"type": "response.create"}))
+                return True
+        return False
+
+    async def inject_text_when_idle(self, text: str, *, sensitive: bool = False) -> bool:
+        """Inject a user-role text turn at the next conversation gap, atomically.
+        Returns False if the session closed first."""
+        return await self.respond_to_when_idle(_text_item(text), sensitive=sensitive)
 
     def spawn_bg(self, make_coro: Callable[[], Awaitable[None]]) -> None:
         """Run a slow tool off the conversation, bounded to max_bg at once and

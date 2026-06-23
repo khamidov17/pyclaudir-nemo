@@ -1,10 +1,11 @@
-"""Nemo's identity, shared memory, and voice tools for the Deepgram agent.
+"""Nemo's identity, shared memory, and voice tools — backend-agnostic.
 
-The voice agent's "think" LLM (gpt-4o-mini, hosted by Deepgram) is otherwise a
-generic stranger. This module gives it Nemo's identity + the SAME memory store
-the text/Telegram Nemo uses (``data/memories/``), and a small set of
-client-side functions so a voice conversation can read and write that shared
-memory and reach Avazbek. Self-contained: only stdlib + aiohttp (already a dep).
+Shared by every realtime voice backend (the live one is Qwen Omni Realtime; the
+Gemini bridge uses it too). The underlying speech model is otherwise a generic
+stranger: this module gives it Nemo's identity + the SAME memory store the
+text/Telegram Nemo uses (``data/memories/``), and a small set of client-side
+functions so a voice conversation can read and write that shared memory and
+reach Avazbek. Self-contained: only stdlib + aiohttp (already a dep).
 """
 
 from __future__ import annotations
@@ -30,8 +31,8 @@ import voice_history
 
 LOG = logging.getLogger("nemo.voice_brain")
 
-# The real Nemo memory store (shared with the text assistant), not nemo_tools'
-# stale data/prod. Overridable for tests.
+# The real Nemo memory store, shared with the text assistant. Overridable for
+# tests via NEMO_VOICE_DATA_DIR.
 _DATA_DIR = Path(
     os.environ.get("NEMO_VOICE_DATA_DIR")
     or (Path(__file__).resolve().parents[2] / "data")
@@ -119,18 +120,37 @@ _IDENTITY = (
 
 
 def _read_memory_digest() -> str:
-    """Concatenate the shared memory files into a compact digest for the prompt."""
+    """Concatenate the shared memory files into a compact digest for the prompt.
+
+    Whole files are included up to a character budget. If some don't fit, a
+    short marker tells the model the rest is reachable via ``recall`` — so a
+    growing memory degrades gracefully instead of being silently truncated
+    mid-sentence (which used to drop later files entirely and could cut a file
+    off mid-fact)."""
     if not _MEM_DIR.is_dir():
         return ""
     parts: list[str] = []
+    used = 0
+    skipped = 0
     for f in sorted(_MEM_DIR.glob("**/*.md")):
         try:
             body = f.read_text().strip()
         except OSError:
             continue
-        if body:
-            parts.append(f"## {f.name}\n{body}")
-    return "\n\n".join(parts).strip()[:_MAX_MEMORY_CHARS]
+        if not body:
+            continue
+        block = f"## {f.name}\n{body}"
+        if parts and used + len(block) + 2 > _MAX_MEMORY_CHARS:
+            skipped += 1  # would overflow — keep whole-file granularity
+            continue
+        if not parts and len(block) > _MAX_MEMORY_CHARS:
+            block = block[:_MAX_MEMORY_CHARS]  # one giant file: include its head
+        parts.append(block)
+        used += len(block) + 2  # +2 for the "\n\n" join separator
+    digest = "\n\n".join(parts).strip()
+    if skipped:
+        digest += f"\n\n(+{skipped} more memory file(s) not shown — use `recall`.)"
+    return digest
 
 
 def _profile() -> str:
@@ -214,7 +234,8 @@ def build_prompt(seed_history: bool = False) -> str:
     return base
 
 
-# Deepgram client-side function definitions (agent.think.functions[]).
+# Client-side function definitions, shared across backends. Each backend adapts
+# these to its own schema (Qwen/OpenAI-realtime `tools[]`, Gemini, etc.).
 FUNCTIONS: list[dict] = [
     {
         "name": "remember",
@@ -286,7 +307,7 @@ FUNCTIONS: list[dict] = [
 
 
 async def dispatch(name: str, args: dict, bridge=None) -> str:
-    """Execute a client-side function; always returns a JSON string for Deepgram.
+    """Execute a client-side function; always returns a JSON string for the backend.
 
     ``bridge`` (ActionBridge) connects phone tools to the live app websocket;
     memory/time tools run locally and ignore it.

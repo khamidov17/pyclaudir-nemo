@@ -51,6 +51,62 @@ async def test_respond_to_pair_is_atomic_under_concurrency():
 
 
 @pytest.mark.asyncio
+async def test_respond_to_when_idle_sends_when_idle():
+    """A fresh link is idle, so the inject fires immediately as one atomic pair."""
+    sock = FakeSocket()
+    link = QwenLink(sock)
+    ok = await link.respond_to_when_idle({"type": "message", "call_id": "x"})
+    assert ok is True
+    assert [m["type"] for m in sock.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_respond_to_when_idle_waits_for_a_reply_to_end():
+    """If a reply is in flight (not idle), the inject parks until mark_idle —
+    it must NOT fire mid-reply (Qwen would drop the response.create)."""
+    sock = FakeSocket()
+    link = QwenLink(sock)
+    link.mark_speaking()  # a reply is underway
+    task = asyncio.create_task(link.respond_to_when_idle({"type": "message"}))
+    await asyncio.sleep(0.02)
+    assert sock.sent == []  # parked — nothing sent while speaking
+    link.mark_idle()  # reply ends → the gap opens
+    assert await task is True
+    assert [m["type"] for m in sock.sent] == [
+        "conversation.item.create",
+        "response.create",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_respond_to_when_idle_returns_false_if_closed():
+    """A session that closes before a gap opens yields False so the caller can
+    fall back to the engine path instead of losing the answer silently."""
+    sock = FakeSocket()
+    link = QwenLink(sock)
+    link.mark_speaking()
+    task = asyncio.create_task(link.respond_to_when_idle({"type": "message"}))
+    await asyncio.sleep(0.02)
+    await link.aclose()  # closes + releases the idle wait
+    assert await task is False
+    assert sock.sent == []
+
+
+@pytest.mark.asyncio
+async def test_respond_to_when_idle_arms_sensitive_under_lock():
+    """sensitive=True sets sensitive_next as part of the same atomic send, so the
+    pump can pin it to exactly this response."""
+    sock = FakeSocket()
+    link = QwenLink(sock)
+    ok = await link.respond_to_when_idle({"type": "message"}, sensitive=True)
+    assert ok is True
+    assert link.sensitive_next is True
+
+
+@pytest.mark.asyncio
 async def test_background_tasks_capped_at_two():
     """At most max_bg tools run at once; a third waits for a slot."""
     sock = FakeSocket()

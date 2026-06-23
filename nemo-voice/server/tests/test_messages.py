@@ -32,6 +32,16 @@ class FakeLink:
     async def inject_text(self, text):
         self.injected.append(text)
 
+    async def inject_text_when_idle(self, text, *, sensitive=False):
+        # Mirror QwenLink: returns False if the session closed first; arms the
+        # privacy flag under the (here notional) send lock right before sending.
+        if self.closed:
+            return False
+        if sensitive:
+            self.sensitive_next = True
+        self.injected.append(text)
+        return True
+
 
 # ── messages.dispatch ────────────────────────────────────────────────────────
 
@@ -158,3 +168,36 @@ async def test_interleaved_turn_cannot_consume_the_flag(monkeypatch):
     await pump._complete_turn()
     assert recorded == [("nemo", "the weather looks nice today")]  # journaled
     assert link.sensitive_next is True  # still armed for the actual summary reply
+
+
+# ── response-id binding (tightens the per-reply privacy flag) ─────────────────
+
+
+async def test_sensitive_bound_by_response_id(monkeypatch):
+    """When Qwen surfaces response ids, sensitivity pins to the exact response
+    opened while the flag was set — not 'whatever reply speaks next'."""
+    pump, link, recorded = _pump(monkeypatch)
+    link.sensitive_next = True  # bg armed it before this response opened
+    pump._on_response_created({"response": {"id": "resp_sensitive"}})
+    assert link.sensitive_next is False  # consumed at response.created, by id
+    await pump._audio({"delta": "AAA=", "response_id": "resp_sensitive"})
+    pump._reply = "3 from Aziz: dinner tonight"
+    await pump._complete_turn()
+    assert recorded == []  # the message summary is not journaled
+
+
+async def test_interleaved_response_id_is_not_sensitive(monkeypatch):
+    """A different response that opens while the flag is NOT set can never be
+    mistaken for the sensitive one — it journals normally."""
+    pump, link, recorded = _pump(monkeypatch)
+    # Sensitive response is created and pinned.
+    link.sensitive_next = True
+    pump._on_response_created({"response": {"id": "resp_sensitive"}})
+    # An UNRELATED reply (different id) is the one that actually speaks first.
+    pump._on_response_created({"response": {"id": "resp_other"}})
+    await pump._audio({"delta": "AAA=", "response_id": "resp_other"})
+    pump._reply = "the weather looks nice today"
+    await pump._complete_turn()
+    assert recorded == [("nemo", "the weather looks nice today")]  # journaled
+    # The sensitive id is still pinned for when its reply does speak.
+    assert "resp_sensitive" in pump._sensitive_response_ids

@@ -37,6 +37,12 @@ _SENSITIVE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
+# Only ever fetch over HTTP(S). An explicit allowlist closes off file://,
+# gopher://, ftp://, data:// and similar schemes that can reach local files or
+# unexpected sinks — defence in depth alongside the IP checks below.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
 def _is_blocked_ip(addr: str) -> bool:
     try:
         ip = ipaddress.ip_address(addr)
@@ -75,6 +81,10 @@ def validate_url_not_ssrf(url: str) -> str | None:
     except ValueError as exc:
         return f"invalid URL: {exc}"
 
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        return f"blocked scheme: {scheme or '(none)'}"
+
     hostname = parsed.hostname
     if not hostname:
         return "missing hostname"
@@ -95,6 +105,10 @@ async def validate_url_not_ssrf_async(url: str) -> str | None:
         parsed = urlparse(url)
     except ValueError as exc:
         return f"invalid URL: {exc}"
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in _ALLOWED_SCHEMES:
+        return f"blocked scheme: {scheme or '(none)'}"
 
     hostname = parsed.hostname
     if not hostname:

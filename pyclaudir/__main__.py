@@ -33,10 +33,13 @@ from .db.messages import insert_tool_call
 from .db.reminders import (
     advance_recurring_reminder,
     any_with_auto_seed_key,
+    claim_reminder_firing,
     fetch_due_reminders,
     insert_auto_seeded_reminder,
     mark_reminder_sent,
     pending_with_auto_seed_key,
+    reset_all_firing_to_pending,
+    reset_reminder_to_pending,
 )
 from .engine import Engine
 from .instructions_store import InstructionsStore
@@ -428,6 +431,18 @@ def _make_reminder_on_success(db: Database, row: dict):
     return _on_success
 
 
+def _make_reminder_on_failure(db: Database, row: dict):
+    """Build the engine ``on_failure`` hook that rolls a claimed reminder back
+    to ``pending`` if the CC turn meant to consume it crashed — so the next loop
+    tick re-fires it instead of leaving it stuck in ``firing`` (#22)."""
+
+    async def _on_failure() -> None:
+        await reset_reminder_to_pending(db, row["id"])
+        log.info("reminder #%d turn failed — reset to pending for retry", row["id"])
+
+    return _on_failure
+
+
 async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
     """Inject one due reminder into the engine as a synthetic message.
 
@@ -441,8 +456,18 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
     If the engine is mid-turn when the reminder fires, the synthetic
     message goes into the pending buffer and runs after the current
     turn ends.
+
+    The row is first *claimed* — moved ``pending`` → ``firing`` — so a turn
+    that outlasts the poll interval is not re-fetched and delivered twice. The
+    claim is atomic; if another cycle already fired this row the claim loses and
+    we skip. ``on_success`` advances/closes it; ``on_failure`` rolls it back to
+    ``pending`` so a crashed turn still re-fires (#22).
     """
     from .models import ChatMessage
+
+    if not await claim_reminder_firing(db, row["id"]):
+        log.info("reminder #%d already claimed by another cycle — skipping", row["id"])
+        return
 
     reminder_xml = (
         f'<reminder id="{row["id"]}" chat_id="{row["chat_id"]}" '
@@ -459,6 +484,7 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
             source="reminder",  # scheduler turn → blocks autonomous reads
         ),
         on_success=_make_reminder_on_success(db, row),
+        on_failure=_make_reminder_on_failure(db, row),
     )
 
 
@@ -479,6 +505,15 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
     logged so it's easy to track down.
     """
     poll_sec = int(os.environ.get("NEMO_REMINDER_POLL_SEC", "10"))
+    # Reclaim rows left ``firing`` by a hard kill mid-delivery (neither the
+    # success nor failure hook ran) so they re-fire on this run instead of being
+    # lost — see #22.
+    try:
+        reclaimed = await reset_all_firing_to_pending(db)
+        if reclaimed:
+            log.info("reminder loop: reclaimed %d row(s) stuck in 'firing'", reclaimed)
+    except Exception:
+        log.exception("reminder loop: failed to reclaim 'firing' rows at startup")
     while True:
         # Wake on a kick (a just-delegated task) or after poll_sec at the latest.
         try:

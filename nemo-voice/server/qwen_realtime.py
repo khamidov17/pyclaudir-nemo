@@ -235,9 +235,14 @@ class _QwenPump:
         # model just says "on it"; the engine speaks the content, so a meeting's
         # words never pass through the voice model (no journaling/leak risk).
         self._pending_recall: str | None = None
-        # Latched (from link.sensitive_next) the moment THIS reply starts, so a
-        # message-summary's privacy flag is bound to the right reply and can't be
-        # consumed by an interleaved turn on the full-duplex link.
+        # Privacy: a message-summary reply must never be journaled. We pin
+        # sensitivity to a concrete RESPONSE ID (bound at response.created, the
+        # earliest point), so an interleaved reply on the full-duplex link can't
+        # steal the flag. `_reply_sensitive` is a fallback latch for backends
+        # that don't surface response ids — it preserves the old behaviour, so
+        # this is never worse for privacy than before.
+        self._sensitive_response_ids: set[str] = set()
+        self._reply_response_id: str | None = None
         self._reply_sensitive: bool = False
         self._turn_timer: asyncio.Task | None = None
         # Serialize sends to the app socket — the turn watchdog runs as its own
@@ -263,6 +268,8 @@ class _QwenPump:
         elif ev_type == "response.audio_transcript.delta":
             self._reply += ev.get("delta", "")
             await self._send({"type": "text", "data": ev.get("delta", "")})
+        elif ev_type == "response.created":
+            self._on_response_created(ev)
         elif ev_type == "conversation.item.input_audio_transcription.completed":
             await self._on_user_transcript(ev.get("transcript", ""))
         elif ev_type == "input_audio_buffer.speech_started":
@@ -324,13 +331,40 @@ class _QwenPump:
         async with self._send_lock:
             await self.client_ws.send(json.dumps(msg))
 
+    def _on_response_created(self, ev: dict) -> None:
+        """Pin sensitivity to a concrete response id the moment Qwen opens the
+        response (before any audio) — the tightest possible binding, so an
+        interleaved reply can't consume the privacy flag."""
+        rid = (ev.get("response") or {}).get("id")
+        if rid and self.link.sensitive_next:
+            self._sensitive_response_ids.add(rid)
+            self.link.sensitive_next = False
+
+    def _reply_is_sensitive(self) -> bool:
+        """Whether the reply just finishing must NOT be journaled — by response
+        id if we have one, else the fallback latch."""
+        if (
+            self._reply_response_id
+            and self._reply_response_id in self._sensitive_response_ids
+        ):
+            return True
+        return self._reply_sensitive
+
+    def _reset_reply_sensitivity(self) -> None:
+        """Clear per-reply privacy state once the reply ends (completed or
+        barged-into), so the next reply starts clean."""
+        if self._reply_response_id:
+            self._sensitive_response_ids.discard(self._reply_response_id)
+        self._reply_response_id = None
+        self._reply_sensitive = False
+
     async def _audio(self, ev: dict) -> None:
         if not self.agent_started:
             self.agent_started = True
-            # Bind the sensitive flag to THIS reply at its first audio, so an
-            # interleaved turn can't consume it (privacy: message summaries must
-            # never be journaled).
-            if self.link.sensitive_next:
+            self._reply_response_id = ev.get("response_id")
+            # Fallback for backends that don't surface a response id: latch the
+            # session flag at first audio the old way, so privacy still holds.
+            if self.link.sensitive_next and not self._reply_response_id:
                 self._reply_sensitive = True
                 self.link.sensitive_next = False
             self.link.mark_speaking()  # hold background results until this reply ends
@@ -381,15 +415,15 @@ class _QwenPump:
             await self._send({"type": "turn_complete"})
         if self._reply.strip():
             # Privacy: a message-summary reply is NOT journaled — so it's never
-            # re-seeded into a future session or fact-extracted. Bound per-reply
-            # (latched at this reply's first audio), NOT the session-global flag,
-            # so an interleaved turn can't consume it.
-            if self._reply_sensitive:
+            # re-seeded into a future session or fact-extracted. Bound to this
+            # reply's response id (or the fallback latch), NOT a session-global
+            # flag, so an interleaved turn can't consume it.
+            if self._reply_is_sensitive():
                 LOG.info("turn: sensitive reply — not journaled")
             else:
                 voice_history.add("nemo", self._reply)
             self._reply = ""
-        self._reply_sensitive = False
+        self._reset_reply_sensitivity()
         self._run_recoveries()
 
     def _run_recoveries(self) -> None:
@@ -443,10 +477,10 @@ class _QwenPump:
         # toward memory (don't drop the partial reply) — UNLESS it's a sensitive
         # message summary, which must never be journaled even when barged into.
         if self._reply.strip():
-            if not self._reply_sensitive:
+            if not self._reply_is_sensitive():
                 voice_history.add("nemo", self._reply)
             self._reply = ""
-        self._reply_sensitive = False
+        self._reset_reply_sensitivity()
         await self._send({"type": "interrupted", "data": "barge_in"})
         await self.link.send({"type": "response.cancel"})
 
@@ -505,29 +539,31 @@ async def _run_bg_tool(link: QwenLink, bridge, name: str, args: dict) -> None:
         content = await voice_brain.dispatch(name, args, bridge)
     except Exception as exc:  # noqa: BLE001
         content = json.dumps({"error": str(exc)})
-    # Wait for a gap in the conversation so the result lands naturally.
-    await link.wait_until_idle()
-    if link.closed:
-        # Non-sensitive results survive a reconnect via the engine→phone path.
-        # Sensitive results (message content) must NEVER hit the engine/DB — drop.
-        if not sensitive:
-            _deliver_via_engine(name, args, content)
-        return
     if sensitive:
         # The summary reply must not be journaled/re-uploaded/fact-extracted.
-        link.sensitive_next = True
-        await link.inject_text(
+        text = (
             "[Avazbek asked to check his messages. Give a SHORT, natural, "
             "Jarvis-style rundown — count, who, and the gist, one or two "
             "sentences. If it says 'nothing new', just say there's nothing new. "
             f"Result: {content}]"
         )
-        return
-    await link.inject_text(
-        f"[Your background task '{_bg_label(name, args)}' just finished — tell "
-        "Avazbek the answer now, briefly and naturally, one or two sentences. "
-        f"Result: {content}]"
-    )
+    else:
+        text = (
+            f"[Your background task '{_bg_label(name, args)}' just finished — tell "
+            "Avazbek the answer now, briefly and naturally, one or two sentences. "
+            f"Result: {content}]"
+        )
+    # Inject at the next conversation gap, atomically (wait-for-idle and the
+    # response.create are fused under one lock so a reply can't slip in between
+    # and make Qwen drop the answer). `sensitive` arms the privacy flag against
+    # this exact reply.
+    delivered = await link.inject_text_when_idle(text, sensitive=sensitive)
+    if not delivered:
+        # Session ended before a gap opened. Non-sensitive results survive via
+        # the engine→phone path; sensitive message content must NEVER hit the
+        # engine/DB — drop it.
+        if not sensitive:
+            _deliver_via_engine(name, args, content)
 
 
 def _deliver_via_engine(name: str, args: dict, content: str) -> None:
