@@ -31,10 +31,15 @@ class MainActivity : FlutterActivity() {
         const val CH_VOICE = "com.avazbek.nemo_app/voice_player"
         const val CH_WAKEWORD = "com.avazbek.nemo_app/wakeword"
         const val CH_MESSAGES = "com.avazbek.nemo_app/messages"
+        const val CH_AUDIO_EFFECTS = "com.avazbek.nemo_app/audio_effects"
         const val SCREENSHOT_REQUEST = 1001
     }
 
     private var wakeWord: WakeWordController? = null
+
+    // Full-duplex echo control (MODE_IN_COMMUNICATION + AcousticEchoCanceler).
+    // Inert until Dart calls enable() — only the opt-in full-duplex path does.
+    private val audioEffects by lazy { AudioEffects(applicationContext) }
 
     // MediaProjection state
     private var mediaProjection: MediaProjection? = null
@@ -176,10 +181,22 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // ── Audio effects channel (full-duplex AEC + comm-path routing) ─
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CH_AUDIO_EFFECTS)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "enable" -> result.success(audioEffects.enable())
+                    "disable" -> { audioEffects.disable(); result.success(true) }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onDestroy() {
         wakeWord?.stop()
+        // Never leave the device stuck in communication mode.
+        audioEffects.disable()
         super.onDestroy()
     }
 

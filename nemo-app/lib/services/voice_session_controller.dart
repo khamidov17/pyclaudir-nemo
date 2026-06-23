@@ -118,9 +118,11 @@ class VoiceSessionController extends ChangeNotifier {
         },
       );
     } else if (signal == 'interrupted') {
-      // While Nemo is speaking the mic is muted, so a barge-in here is his
-      // own voice echoing in — ignore it so it can't chop his sentence.
-      if (nemoSpeaking) {
+      // Half-duplex: the mic is muted while Nemo speaks, so a barge-in here is
+      // his own voice echoing in — ignore it so it can't chop his sentence.
+      // Full-duplex: the mic stays open and AEC removes his voice, so a barge-in
+      // is a REAL interruption — let it through.
+      if (nemoSpeaking && !kFullDuplex) {
         _add('✋ echo barge-in IGNORED (Nemo speaking)');
         return;
       }

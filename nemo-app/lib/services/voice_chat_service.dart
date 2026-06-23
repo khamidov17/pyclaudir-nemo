@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
@@ -17,6 +18,17 @@ import 'secure_net.dart';
 const _storage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
 );
+
+/// Full-duplex master switch. OFF by default = today's proven half-duplex
+/// (mic muted while Nemo speaks). Flip to `true` to keep the mic open and let
+/// the platform AEC (AudioEffects.kt: MODE_IN_COMMUNICATION + AcousticEchoCanceler)
+/// cancel Nemo's voice so you can interrupt him. NEEDS ON-DEVICE TUNING — audio
+/// routing/echo behavior varies by hardware; see scripts notes + the AEC report.
+const bool kFullDuplex = false;
+
+/// Native channel for the comm-path routing + echo-canceler (AudioEffects.kt).
+const MethodChannel _audioFx =
+    MethodChannel('com.avazbek.nemo_app/audio_effects');
 
 /// Real-time voice chat via nemo-voice (Deepgram Voice Agent).
 ///
@@ -70,6 +82,10 @@ class VoiceChatService extends ChangeNotifier {
   static const int _recSampleRate = 16000; // matches the capture RecordConfig
 
   void setMuted(bool m) {
+    // Full-duplex: the mic stays open while Nemo speaks (his voice is cancelled
+    // by the platform AEC, see AudioEffects.kt), so the half-duplex mute is a
+    // no-op. Barge-in then reaches the server VAD for a real interruption.
+    if (kFullDuplex) return;
     _muted = m;
     _muteWatchdog?.cancel();
     if (m) {
@@ -193,6 +209,17 @@ class VoiceChatService extends ChangeNotifier {
 
     _active = true;
     notifyListeners();
+
+    // Full-duplex: route playback to the comm path + engage the echo canceler so
+    // the always-open mic doesn't hear Nemo as a barge-in. No-op when off.
+    if (kFullDuplex) {
+      try {
+        final status = await _audioFx.invokeMethod('enable');
+        debugPrint('VoiceChatService: AEC enabled → $status');
+      } catch (e) {
+        debugPrint('AEC enable failed: $e');
+      }
+    }
 
     _recorderSub = stream.listen((chunk) {
       // Meeting recorder tee: capture the full room audio continuously,
@@ -508,6 +535,12 @@ class VoiceChatService extends ChangeNotifier {
     _recorder?.dispose();
     _recorder = null;
     _recorderSub = null;
+    // Restore normal audio routing (undo comm-mode/speakerphone). No-op when off.
+    if (kFullDuplex) {
+      try {
+        await _audioFx.invokeMethod('disable');
+      } catch (_) {}
+    }
     _wsSub?.cancel();
     _ws?.sink.close(ws_status.goingAway);
     _ws = null;
