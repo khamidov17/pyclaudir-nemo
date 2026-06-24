@@ -34,7 +34,7 @@ async def test_claim_is_won_once_then_not_refetched() -> None:
     rid = await R.insert_reminder(db, chat_id=1, user_id=1, text="x", trigger_at=_PAST)
     assert len(await R.fetch_due_reminders(db, _NOW)) == 1
 
-    assert await R.claim_reminder_firing(db, rid) is True   # this cycle wins
+    assert await R.claim_reminder_firing(db, rid) is True  # this cycle wins
     assert await R.claim_reminder_firing(db, rid) is False  # a racing cycle loses
     # While firing, the row is no longer "due" — so a slow turn can't be
     # delivered a second time by the next poll.
@@ -65,7 +65,9 @@ async def test_startup_reclaim_recovers_hard_kill() -> None:
 @pytest.mark.asyncio
 async def test_one_shot_closes_and_recurring_returns_to_pending() -> None:
     db = await _db()
-    one = await R.insert_reminder(db, chat_id=1, user_id=1, text="once", trigger_at=_PAST)
+    one = await R.insert_reminder(
+        db, chat_id=1, user_id=1, text="once", trigger_at=_PAST
+    )
     rec = await R.insert_reminder(
         db, chat_id=1, user_id=1, text="daily", trigger_at=_PAST, cron_expr="0 9 * * *"
     )

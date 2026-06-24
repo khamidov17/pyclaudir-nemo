@@ -98,7 +98,9 @@ class QwenLink:
         """Inject a user-role text turn and let Nemo respond to it."""
         await self.respond_to(_text_item(text))
 
-    async def respond_to_when_idle(self, item: dict, *, sensitive: bool = False) -> bool:
+    async def respond_to_when_idle(
+        self, item: dict, *, sensitive: bool = False
+    ) -> bool:
         """Like :meth:`respond_to`, but wait for a conversation gap first AND
         re-check idle *under the send lock* before firing.
 
@@ -129,7 +131,9 @@ class QwenLink:
                 return True
         return False
 
-    async def inject_text_when_idle(self, text: str, *, sensitive: bool = False) -> bool:
+    async def inject_text_when_idle(
+        self, text: str, *, sensitive: bool = False
+    ) -> bool:
         """Inject a user-role text turn at the next conversation gap, atomically.
         Returns False if the session closed first."""
         return await self.respond_to_when_idle(_text_item(text), sensitive=sensitive)

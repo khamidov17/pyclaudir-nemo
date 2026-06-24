@@ -85,7 +85,9 @@ async def test_malformed_payload_is_graceful():
 
 async def test_read_messages_marks_reply_sensitive(monkeypatch):
     async def fake_dispatch(name, args, bridge):
-        return json.dumps({"messages": [{"app": "Telegram", "from": "Aziz", "text": "hi"}]})
+        return json.dumps(
+            {"messages": [{"app": "Telegram", "from": "Aziz", "text": "hi"}]}
+        )
 
     monkeypatch.setattr(qwen_realtime.voice_brain, "dispatch", fake_dispatch)
     link = FakeLink()
@@ -126,7 +128,9 @@ def _pump(monkeypatch):
 
     recorded: list = []
     monkeypatch.setattr(
-        qwen_realtime.voice_history, "add", lambda role, text: recorded.append((role, text))
+        qwen_realtime.voice_history,
+        "add",
+        lambda role, text: recorded.append((role, text)),
     )
 
     class FakeSock:

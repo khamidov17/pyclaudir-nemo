@@ -33,7 +33,8 @@ def _function_declarations() -> list[types.FunctionDeclaration]:
         types.FunctionDeclaration(
             name=f["name"],
             description=f["description"],
-            parameters_json_schema=f.get("parameters") or {"type": "object", "properties": {}},
+            parameters_json_schema=f.get("parameters")
+            or {"type": "object", "properties": {}},
         )
         for f in voice_brain.FUNCTIONS
     ]
@@ -42,7 +43,9 @@ def _function_declarations() -> list[types.FunctionDeclaration]:
 def _config() -> types.LiveConnectConfig:
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        system_instruction=types.Content(parts=[types.Part(text=voice_brain.build_prompt())]),
+        system_instruction=types.Content(
+            parts=[types.Part(text=voice_brain.build_prompt())]
+        ),
         tools=[types.Tool(function_declarations=_function_declarations())],
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
@@ -58,7 +61,9 @@ async def run_session(client_ws) -> None:
     """Bridge one authenticated app client to a Gemini Live session."""
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
-        await client_ws.send(json.dumps({"type": "error", "message": "GEMINI_API_KEY not configured"}))
+        await client_ws.send(
+            json.dumps({"type": "error", "message": "GEMINI_API_KEY not configured"})
+        )
         return
     client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
     async with client.aio.live.connect(model=MODEL, config=_config()) as session:
@@ -113,27 +118,39 @@ async def _recv_gemini(session, client_ws, bridge) -> None:
             if not sc:
                 continue
             if sc.input_transcription and sc.input_transcription.text:
-                await client_ws.send(json.dumps(
-                    {"type": "user_transcript", "data": sc.input_transcription.text}
-                ))
+                await client_ws.send(
+                    json.dumps(
+                        {"type": "user_transcript", "data": sc.input_transcription.text}
+                    )
+                )
             if sc.output_transcription and sc.output_transcription.text:
-                await client_ws.send(json.dumps(
-                    {"type": "text", "data": sc.output_transcription.text}
-                ))
+                await client_ws.send(
+                    json.dumps({"type": "text", "data": sc.output_transcription.text})
+                )
             if sc.model_turn:
                 for part in sc.model_turn.parts:
                     inline = getattr(part, "inline_data", None)
                     if inline and inline.data:
                         if not agent_started:
                             agent_started = True
-                            await client_ws.send(json.dumps({"type": "agent_audio_start"}))
-                        await client_ws.send(json.dumps({
-                            "type": "audio",
-                            "data": base64.b64encode(inline.data).decode("ascii"),
-                        }))
+                            await client_ws.send(
+                                json.dumps({"type": "agent_audio_start"})
+                            )
+                        await client_ws.send(
+                            json.dumps(
+                                {
+                                    "type": "audio",
+                                    "data": base64.b64encode(inline.data).decode(
+                                        "ascii"
+                                    ),
+                                }
+                            )
+                        )
             if sc.interrupted:
                 agent_started = False
-                await client_ws.send(json.dumps({"type": "interrupted", "data": "barge_in"}))
+                await client_ws.send(
+                    json.dumps({"type": "interrupted", "data": "barge_in"})
+                )
             if sc.turn_complete and agent_started:
                 agent_started = False
                 await client_ws.send(json.dumps({"type": "turn_complete"}))
@@ -152,5 +169,7 @@ async def _handle_tool_calls(tool_call, session, bridge) -> None:
             result = json.loads(content)
         except json.JSONDecodeError:
             result = {"result": content}
-        responses.append(types.FunctionResponse(id=fc.id, name=fc.name, response=result))
+        responses.append(
+            types.FunctionResponse(id=fc.id, name=fc.name, response=result)
+        )
     await session.send_tool_response(function_responses=responses)

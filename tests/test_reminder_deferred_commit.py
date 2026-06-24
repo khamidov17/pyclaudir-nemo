@@ -138,7 +138,9 @@ async def test_on_failure_fires_on_worker_failure() -> None:
 
     await eng.start()
     try:
-        await eng.submit(_msg("hi", mid=1), on_success=on_success, on_failure=on_failure)
+        await eng.submit(
+            _msg("hi", mid=1), on_success=on_success, on_failure=on_failure
+        )
         await asyncio.sleep(0.08)
         assert worker.sent
 
@@ -167,7 +169,9 @@ async def test_on_failure_not_fired_on_clean_turn() -> None:
 
     await eng.start()
     try:
-        await eng.submit(_msg("hi", mid=1), on_success=on_success, on_failure=on_failure)
+        await eng.submit(
+            _msg("hi", mid=1), on_success=on_success, on_failure=on_failure
+        )
         await asyncio.sleep(0.08)
         worker.feed(
             TurnResult(

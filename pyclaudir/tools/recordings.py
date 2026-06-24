@@ -102,5 +102,9 @@ class ReadTranscriptTool(BaseTool):
         header = f"Transcript of {rec_id} ({meta.date}, {meta.duration_sec}s):\n\n"
         return ToolResult(
             content=header + body,
-            data={"id": rec_id, "transcribed": meta.transcribed, "truncated": truncated},
+            data={
+                "id": rec_id,
+                "transcribed": meta.transcribed,
+                "truncated": truncated,
+            },
         )

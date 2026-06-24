@@ -27,7 +27,10 @@ _SAFE_REC_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 def is_safe_rec_id(rec_id: str) -> bool:
     """True if ``rec_id`` is safe to use as a path segment (no traversal)."""
-    return bool(rec_id) and rec_id not in (".", "..") and bool(_SAFE_REC_ID.match(rec_id))
+    return (
+        bool(rec_id) and rec_id not in (".", "..") and bool(_SAFE_REC_ID.match(rec_id))
+    )
+
 
 log = logging.getLogger("pyclaudir.recording_store")
 
