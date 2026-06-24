@@ -20,6 +20,7 @@ from pathlib import Path
 
 import aiohttp
 
+import assistant_tools
 import memory_index
 import messages
 import phone_tools
@@ -204,7 +205,12 @@ def build_prompt(seed_history: bool = False) -> str:
     base = (
         f"{_IDENTITY}\n\nYou genuinely remember Avazbek across every conversation. "
         "Use your tools to go deeper: `recall` for saved facts, `search_chat` for "
-        "his full Telegram history with you, `get_time` for the time. The moment he "
+        "his full Telegram history with you, `get_time` for the time. For exact "
+        "numbers, always reach for a tool instead of guessing: `calculate` for any "
+        "arithmetic (percentages, tips, square roots, big sums), `convert_units` for "
+        "unit conversions (miles↔km, lbs↔kg, °F↔°C), and `world_time` for the time in "
+        "another city — these are instant and offline, so use them, don't delegate "
+        "simple math. The moment he "
         "tells you anything worth keeping — a preference, fact, plan, name, or person "
         "— call `remember` immediately so it's there next time.\n"
         "CONTINUITY: you are almost always picking up an ONGOING conversation — a "
@@ -303,6 +309,7 @@ FUNCTIONS: list[dict] = [
     *skills.FUNCTIONS,
     *vision.FUNCTIONS,
     *web_search.FUNCTIONS,
+    *assistant_tools.FUNCTIONS,
 ]
 
 
@@ -324,6 +331,9 @@ async def dispatch(name: str, args: dict, bridge=None) -> str:
         if name in web_search.TOOL_NAMES:
             # Blocking HTTP — offload so it never stalls the voice event loop.
             return await asyncio.to_thread(web_search.dispatch, name, args)
+        if name in assistant_tools.TOOL_NAMES:
+            # Offline + instant (calculator / converter / world clock).
+            return assistant_tools.dispatch(name, args)
         if name in messages.TOOL_NAMES:
             # Recovery-only (not in FUNCTIONS) → explicit-request-only by design.
             return await messages.dispatch(name, args, bridge)
