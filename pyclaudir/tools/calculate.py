@@ -61,6 +61,11 @@ _MAX_POW_EXPONENT = 1000
 # calculator need and well short of a memory problem.
 _MAX_RESULT_BITS = 4096
 
+# Bound the raw expression length. _eval_node recurses once per operator, so a
+# long flat chain ("1+1+1+…") would overflow the stack before any size guard
+# runs. 1000 chars is far more than any real spoken/typed calculation.
+_MAX_EXPR_LEN = 1000
+
 
 def _guard_size(value: Any) -> Any:
     """Reject integer results large enough to threaten CPU/memory."""
@@ -94,17 +99,19 @@ def _eval_node(node: ast.AST) -> Any:
         return _guard_size(fn(left, right))
 
     if isinstance(node, ast.UnaryOp):
-        op_type = type(node.op)
-        fn = _UNARY_OPS.get(op_type)
-        if fn is None:
-            raise CalculateError(f"unary operator {op_type.__name__} is not allowed")
-        return fn(_eval_node(node.operand))
+        u_op_type = type(node.op)
+        u_fn = _UNARY_OPS.get(u_op_type)
+        if u_fn is None:
+            raise CalculateError(f"unary operator {u_op_type.__name__} is not allowed")
+        return u_fn(_eval_node(node.operand))
 
     if isinstance(node, ast.Call):
         # Only bare-name calls to whitelisted functions. No attribute access
         # (``math.system``), no keywords, no *args/**kwargs.
         if not isinstance(node.func, ast.Name):
-            raise CalculateError("only direct calls to whitelisted functions are allowed")
+            raise CalculateError(
+                "only direct calls to whitelisted functions are allowed"
+            )
         name = node.func.id
         fn = _FUNCS.get(name)
         if fn is None:
@@ -125,6 +132,11 @@ def safe_eval(expression: str) -> float | int:
     """
     if not isinstance(expression, str) or not expression.strip():
         raise CalculateError("empty expression")
+    # Bound input length: a flat operator chain ("1+1+1+…") recurses once per
+    # BinOp in _eval_node, so a long expression overflows the stack. Capping the
+    # length bounds both the parse cost and the recursion depth.
+    if len(expression) > _MAX_EXPR_LEN:
+        raise CalculateError("expression too long")
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as exc:
@@ -135,6 +147,8 @@ def safe_eval(expression: str) -> float | int:
         raise
     except ZeroDivisionError as exc:
         raise CalculateError("division by zero") from exc
+    except RecursionError as exc:
+        raise CalculateError("expression too complex") from exc
     except (ValueError, OverflowError, TypeError) as exc:
         raise CalculateError(str(exc)) from exc
     if not isinstance(result, (int, float)) or isinstance(result, bool):

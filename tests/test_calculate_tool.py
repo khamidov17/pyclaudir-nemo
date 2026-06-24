@@ -7,8 +7,6 @@ small whitelist. It uses ``ast`` (not ``eval``), so these can never execute.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from pyclaudir.tools.base import ToolContext
@@ -18,6 +16,27 @@ from pyclaudir.tools.calculate import (
     CalculateTool,
     safe_eval,
 )
+
+
+def test_long_flat_chain_does_not_overflow() -> None:
+    # A flat operator chain recurses once per BinOp; without the length cap this
+    # raised an uncaught RecursionError and wedged the turn. Now a clean error.
+    expr = "1" + "+1" * 5000
+    with pytest.raises(CalculateError):
+        safe_eval(expr)
+
+
+def test_overlong_expression_rejected() -> None:
+    with pytest.raises(CalculateError, match="too long"):
+        safe_eval("1+" * 600 + "1")  # > 1000 chars
+
+
+@pytest.mark.asyncio
+async def test_tool_run_long_chain_clean_error() -> None:
+    tool = CalculateTool(ToolContext())
+    result = await tool.run(CalculateArgs(expression="1" + "+1" * 5000))
+    assert result.is_error
+    assert "error:" in result.content
 
 
 # ---------------------------------------------------------------------------
