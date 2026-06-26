@@ -210,7 +210,9 @@ class _QwenPump:
             task, self._pending_code_intent = self._pending_code_intent, None
             LOG.info("recovering missed code delegation")
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
+                lambda: voice_intent.recover_delegate(
+                    self.link, self.bridge, task, self._orchestrator
+                )
             )
         if self._pending_search:
             query, self._pending_search = self._pending_search, None
@@ -236,7 +238,9 @@ class _QwenPump:
             task, self._pending_recall = self._pending_recall, None
             LOG.info("recovering recording recall → engine: %r", task)
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
+                lambda: voice_intent.recover_delegate(
+                    self.link, self.bridge, task, self._orchestrator
+                )
             )
 
     async def _barge_in(self) -> None:
@@ -273,7 +277,7 @@ class _QwenPump:
                 except json.JSONDecodeError:
                     args = {}
                 await self._orchestrator.on_tool_call(name or "", args)
-            await _handle_tool(self.link, self.bridge, item)
+            await _handle_tool(self.link, self.bridge, item, self._orchestrator)
 
     async def _done(self, ev: dict) -> None:
         await self._complete_turn()

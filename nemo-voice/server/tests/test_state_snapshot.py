@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from state_snapshot import StateSnapshot, _sanitize_value
 

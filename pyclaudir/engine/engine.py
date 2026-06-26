@@ -177,6 +177,11 @@ class Engine:
         #: Written by the /internal/kick handler when VOICE_STREAM_BRAIN=1; read
         #: and cleared by _fire_one_reminder to build the on_chunk coroutine.
         self._pending_voice_session_id: str = ""
+        #: The voice StateSnapshot.rev captured at delegate time. The engine
+        #: echoes this UNCHANGED on every streamed chunk so the orchestrator can
+        #: tell whether the topic moved on since it delegated (stale-drop). It is
+        #: NOT a per-chunk sequence number.
+        self._pending_voice_rev: int = 0
         self._lock = asyncio.Lock()
         self._is_processing = asyncio.Event()
         self._debounce_task: asyncio.Task[None] | None = None

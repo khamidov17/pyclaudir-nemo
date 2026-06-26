@@ -200,12 +200,18 @@ def is_record_recall_intent(text: str) -> bool:
     return len(t) >= 4 and bool(_RECORD_RECALL.search(t))
 
 
-async def recover_delegate(link, bridge, task: str) -> None:
+async def recover_delegate(link, bridge, task: str, orchestrator=None) -> None:
     """Fire the delegate_task the model forgot, then have Nemo acknowledge it."""
     import voice_brain
 
+    args: dict = {"task": task}
+    # Same weave-in tagging as the normal tool path so a recovered delegate also
+    # streams its result back to this session.
+    if orchestrator is not None:
+        args["_voice_session_id"] = orchestrator.session_id
+        args["_voice_rev"] = orchestrator.snapshot.rev
     try:
-        await voice_brain.dispatch("delegate_task", {"task": task}, bridge)
+        await voice_brain.dispatch("delegate_task", args, bridge)
     except Exception:  # noqa: BLE001 — never crash the turn over a recovery
         return
     # Land at a conversation gap, atomically (drop if the session closed first).

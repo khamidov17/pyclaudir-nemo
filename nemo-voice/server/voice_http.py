@@ -62,6 +62,12 @@ def _rate_ok(session_id: str) -> bool:
     return True
 
 
+def forget_session(session_id: str) -> None:
+    """Drop a session's rate-limit bucket on teardown so _RATE doesn't grow
+    unbounded across the process lifetime."""
+    _RATE.pop(session_id, None)
+
+
 async def handle_brain_result(request: web.Request) -> web.Response:
     """POST /internal/brain_result — engine streams a clause chunk to this session.
 
@@ -94,9 +100,9 @@ async def handle_brain_result(request: web.Request) -> web.Response:
     orch = session_registry.get(session_id)
     if orch is None:
         return web.Response(status=404)
-    import asyncio
-
-    asyncio.create_task(orch.on_background_chunk(chunk, final, rev))
+    # Enqueue (FIFO, single consumer) so a multi-clause answer is woven in the
+    # order the engine produced it — create_task per POST does not preserve order.
+    orch.enqueue_chunk(chunk, final, rev)
     return web.Response(status=202)
 
 
