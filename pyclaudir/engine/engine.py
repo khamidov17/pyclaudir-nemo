@@ -171,6 +171,12 @@ class Engine:
         #: clean turn.
         self._pending_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
         self._turn_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
+        #: P3 voice weave-in: on_chunk callback queued per submit(), applied to
+        #: the worker before each turn. Only the last queued one is used per turn.
+        self._pending_on_chunk: object | None = None
+        #: Written by the /internal/kick handler when VOICE_STREAM_BRAIN=1; read
+        #: and cleared by _fire_one_reminder to build the on_chunk coroutine.
+        self._pending_voice_session_id: str = ""
         self._lock = asyncio.Lock()
         self._is_processing = asyncio.Event()
         self._debounce_task: asyncio.Task[None] | None = None
@@ -220,6 +226,7 @@ class Engine:
         on_success: Callable[[], Awaitable[None]] | None = None,
         on_failure: Callable[[], Awaitable[None]] | None = None,
         runtime_profile: dict | None = None,
+        on_chunk: object | None = None,
     ) -> None:
         """Add an inbound message to the pending buffer.
 
@@ -244,6 +251,8 @@ class Engine:
                 self._pending_callbacks.append(on_success)
             if on_failure is not None:
                 self._pending_failure_callbacks.append(on_failure)
+            if on_chunk is not None:
+                self._pending_on_chunk = on_chunk
 
         if self._is_processing.is_set():
             await self._maybe_inject()
@@ -272,6 +281,8 @@ class Engine:
             self._pending_callbacks = []
             self._turn_failure_callbacks.extend(self._pending_failure_callbacks)
             self._pending_failure_callbacks = []
+            turn_on_chunk = self._pending_on_chunk
+            self._pending_on_chunk = None
             self._is_processing.set()
         # Skip synthetic reminders (mid=0) — no human waiting on them, so
         # the turn-start typing indicator should be silent for
@@ -290,6 +301,7 @@ class Engine:
             runtime_profile = self._default_runtime_profile(batch[-1])
         if runtime_profile:
             await self._worker.apply_runtime(**runtime_profile)
+        self._worker._on_chunk = turn_on_chunk
         await self._worker.send(xml)
 
     async def _announce_turn_start(self, batch: list[ChatMessage]) -> None:

@@ -170,6 +170,10 @@ class CcWorker:
         self._stream_log_path: Path | None = None
         self._stderr_log: IO[str] | None = None
         self._stderr_log_path: Path | None = None
+        #: Optional streaming callback set by engine before each turn (P3 voice
+        #: weave-in). Fired on every text block and once (final=True) at turn
+        #: end. Cleared in _on_result_event so it never leaks across turns.
+        self._on_chunk: object | None = None
 
     @property
     def session_id(self) -> str | None:
@@ -946,6 +950,8 @@ class CcWorker:
             if txt:
                 self._current_turn.text_blocks.append(txt)
                 log_cc_text(txt)
+                if self._on_chunk is not None:
+                    asyncio.create_task(self._on_chunk(txt, False))
         elif btype == "tool_use":
             self._handle_assistant_tool_use(block)
         elif btype == "thinking":
@@ -1022,6 +1028,9 @@ class CcWorker:
         # Turn finished cleanly; defuse the watchdog so a stale deadline
         # from this turn can't trip the breaker after the fact.
         self._cancel_tool_error_watchdog()
+        if self._on_chunk is not None:
+            asyncio.create_task(self._on_chunk("", True))
+            self._on_chunk = None
         self._result_queue.put_nowait(self._current_turn)
         self._current_turn = None
 

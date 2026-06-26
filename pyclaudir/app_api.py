@@ -266,7 +266,10 @@ class AppApiServer:
         async def internal_kick(request: Request, token: str = "") -> dict:
             """Wake the reminder loop NOW — the voice process pokes this right
             after inserting a delegated task so it runs in ~0s instead of waiting
-            for the poll. Localhost + app-token only (it can trigger work)."""
+            for the poll. Localhost + app-token only (it can trigger work).
+            Optional JSON body: {"voice_session_id": "<uuid>"} — stored on the
+            engine so _fire_one_reminder can stream chunks back to the voice session
+            (VOICE_STREAM_BRAIN=1 path)."""
             from fastapi import HTTPException
 
             client = request.client.host if request.client else ""
@@ -279,6 +282,13 @@ class AppApiServer:
             if not _check_token(supplied):
                 raise HTTPException(401, "unauthorized")
             if self._engine is not None:
+                try:
+                    body = await request.json()
+                    vsid = str(body.get("voice_session_id", "")).strip()
+                except Exception:  # noqa: BLE001 — body is optional
+                    vsid = ""
+                if vsid:
+                    self._engine._pending_voice_session_id = vsid  # type: ignore[union-attr]
                 self._engine.reminder_kick.set()  # type: ignore[union-attr]
             return {"status": "kicked"}
 

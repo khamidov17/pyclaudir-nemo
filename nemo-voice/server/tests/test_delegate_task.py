@@ -14,7 +14,9 @@ def _capture(monkeypatch):
     sent = {}
     monkeypatch.setattr(reminders, "_CHAT_ID", "12345")
     monkeypatch.setattr(
-        reminders, "notify_now", lambda text: sent.__setitem__("text", text) or "{}"
+        reminders,
+        "notify_now",
+        lambda text, **_kw: sent.__setitem__("text", text) or "{}",
     )
     return sent
 

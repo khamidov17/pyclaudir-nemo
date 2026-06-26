@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'native_voice_player.dart';
 import 'phone_command_executor.dart';
 import 'voice_chat_service.dart';
+import 'voice_debug_stats.dart';
 import 'wake_word_service.dart';
+
+export 'voice_debug_stats.dart';
 
 /// App-level owner of the live voice conversation.
 ///
@@ -38,6 +41,12 @@ class VoiceSessionController extends ChangeNotifier {
   bool idleClosed = false;
   bool get isActive => _voice.isActive;
   Stream<String> get errors => _voice.errors;
+
+  /// Live debug stats for the debug overlay. Updated during the session.
+  VoiceDebugStats debugStats = const VoiceDebugStats(aecEnabled: kFullDuplex);
+
+  // Tracks when a barge-in signal first arrived, for latency measurement.
+  int _bargeInStartMs = 0;
 
   // Estimated wall-clock time (ms since epoch) at which all audio handed to
   // the player so far will have finished playing. Used to resume the mic the
@@ -95,6 +104,7 @@ class VoiceSessionController extends ChangeNotifier {
       _turnChunks = 0;
       _turnBytes = 0;
       nemoSpeaking = true;
+      _bargeInStartMs = DateTime.now().millisecondsSinceEpoch;
       _add('▶ speaking · mic closed');
     } else if (signal == 'turn_complete') {
       final secs = (_turnBytes / 48000).toStringAsFixed(1);
@@ -126,12 +136,27 @@ class VoiceSessionController extends ChangeNotifier {
         _add('✋ echo barge-in IGNORED (Nemo speaking)');
         return;
       }
+      final latencyMs = _bargeInStartMs > 0
+          ? DateTime.now().millisecondsSinceEpoch - _bargeInStartMs
+          : 0;
+      debugStats = debugStats.copyWith(bargeInLatencyMs: latencyMs);
+      _bargeInStartMs = 0;
       _add('✋ barge-in → flush');
       _player.flush();
       _estPlaybackEndMs = 0;
       _unmuteTimer?.cancel();
       _voice.setMuted(false);
       _resetIdle();
+    } else if (signal == 'fullduplex_demote') {
+      // Server detected self-barge (Nemo's voice leaked through AEC and triggered
+      // his own VAD). Demote to half-duplex for the rest of this turn: mute the
+      // mic so the echo can't re-trigger, and tally the event for the debug overlay.
+      debugStats = debugStats.copyWith(
+        selfBargeCount: debugStats.selfBargeCount + 1,
+        aecEnabled: false,
+      );
+      _voice.setMuted(true);
+      _add('⚠ fullduplex_demote → half-duplex fallback (self-barge #${debugStats.selfBargeCount})');
     } else if (signal == 'reconnecting') {
       // Connection dropped — new session boundary: bump the generation so any
       // pending unmute timer from the old session can't fire. Don't idle-close
@@ -201,6 +226,8 @@ class VoiceSessionController extends ChangeNotifier {
       await _player.start(sampleRate: 24000);
       final started = await _voice.start(_serverUrl());
       if (started) {
+        debugStats = VoiceDebugStats(aecEnabled: kFullDuplex);
+        _bargeInStartMs = 0;
         _add('Voice chat started — speak now');
         _resetIdle();
       } else {

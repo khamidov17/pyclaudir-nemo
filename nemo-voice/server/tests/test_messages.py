@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 
 import messages
+import pump_class
+import pump_tools
+import qwen_pump
 import qwen_realtime
 
 
@@ -89,9 +92,9 @@ async def test_read_messages_marks_reply_sensitive(monkeypatch):
             {"messages": [{"app": "Telegram", "from": "Aziz", "text": "hi"}]}
         )
 
-    monkeypatch.setattr(qwen_realtime.voice_brain, "dispatch", fake_dispatch)
+    monkeypatch.setattr(pump_tools.voice_brain, "dispatch", fake_dispatch)
     link = FakeLink()
-    await qwen_realtime._run_bg_tool(link, None, "read_messages", {})
+    await pump_tools._run_bg_tool(link, None, "read_messages", {})
     # The next reply (the summary) is flagged so the pump won't journal it.
     assert link.sensitive_next is True
     assert "messages" in link.injected[0].lower()
@@ -100,22 +103,22 @@ async def test_read_messages_marks_reply_sensitive(monkeypatch):
 async def test_read_messages_closed_session_does_not_persist(monkeypatch):
     delivered = []
     monkeypatch.setattr(
-        qwen_realtime, "_deliver_via_engine", lambda *a: delivered.append(a)
+        pump_tools, "_deliver_via_engine", lambda *a: delivered.append(a)
     )
 
     async def fake_dispatch(name, args, bridge):
         return json.dumps({"messages": [{"text": "private secret"}]})
 
-    monkeypatch.setattr(qwen_realtime.voice_brain, "dispatch", fake_dispatch)
+    monkeypatch.setattr(pump_tools.voice_brain, "dispatch", fake_dispatch)
     link = FakeLink()
     link.closed = True
-    await qwen_realtime._run_bg_tool(link, None, "read_messages", {})
+    await pump_tools._run_bg_tool(link, None, "read_messages", {})
     # Sensitive content must NEVER hit the engine→reminders DB fallback.
     assert delivered == []
 
 
 async def test_read_messages_is_in_sensitive_tools():
-    assert "read_messages" in qwen_realtime._SENSITIVE_TOOLS
+    assert "read_messages" in pump_tools._SENSITIVE_TOOLS
 
 
 # ── P0 fix: the per-reply sensitive latch (privacy) ──────────────────────────
@@ -128,7 +131,7 @@ def _pump(monkeypatch):
 
     recorded: list = []
     monkeypatch.setattr(
-        qwen_realtime.voice_history,
+        pump_class.voice_history,
         "add",
         lambda role, text: recorded.append((role, text)),
     )
@@ -138,7 +141,8 @@ def _pump(monkeypatch):
             return None
 
     link = QwenLink(FakeSock())
-    pump = qwen_realtime._QwenPump(link, FakeSock(), None)
+    ctx = pump_tools._SessionCtx(client_ws=FakeSock(), bridge=None)
+    pump = pump_class._QwenPump(link, ctx)
     return pump, link, recorded
 
 

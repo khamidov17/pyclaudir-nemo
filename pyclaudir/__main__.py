@@ -474,6 +474,33 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
         f'<reminder id="{row["id"]}" chat_id="{row["chat_id"]}" '
         f'user_id="{row["user_id"]}">{row["text"]}</reminder>'
     )
+    # P3 voice weave-in: if kick body included voice_session_id and streaming is
+    # enabled, build an on_chunk callback so the engine POSTs clause chunks to
+    # the live voice session as they arrive (VOICE_STREAM_BRAIN=1 path).
+    on_chunk = None
+    _stream_brain = os.environ.get("VOICE_STREAM_BRAIN", "0").strip() == "1"
+    vsid = engine._pending_voice_session_id
+    if vsid:
+        engine._pending_voice_session_id = ""
+    if _stream_brain and vsid:
+        from .voice_bridge import post_chunk
+        from .cc_worker.chunker import ClauseChunker
+
+        _chunker = ClauseChunker()
+        _chunk_rev = [0]  # mutable cell shared with the closure
+
+        async def _on_chunk(text: str, final: bool) -> None:
+            if final:
+                for c in _chunker.flush():
+                    _chunk_rev[0] += 1
+                    await post_chunk(vsid, c, True, _chunk_rev[0])
+                return
+            for c in _chunker.feed(text):
+                _chunk_rev[0] += 1
+                await post_chunk(vsid, c, False, _chunk_rev[0])
+
+        on_chunk = _on_chunk
+
     await engine.submit(
         ChatMessage(
             chat_id=row["chat_id"],
@@ -486,6 +513,7 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
         ),
         on_success=_make_reminder_on_success(db, row),
         on_failure=_make_reminder_on_failure(db, row),
+        on_chunk=on_chunk,
     )
 
 

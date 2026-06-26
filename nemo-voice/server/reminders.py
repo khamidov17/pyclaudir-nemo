@@ -121,11 +121,13 @@ def _connect() -> sqlite3.Connection:
     return con
 
 
-def _kick_engine() -> None:
+def _kick_engine(voice_session_id: str = "") -> None:
     """Best-effort: wake the engine's reminder loop NOW so a just-inserted
     immediate reminder (a delegated task) runs in ~0s instead of waiting up to a
     poll interval. Fire-and-forget in a daemon thread so it never blocks the
-    voice event loop; the engine's own poll is the guaranteed fallback."""
+    voice event loop; the engine's own poll is the guaranteed fallback.
+    Passes voice_session_id in the body when provided so the engine can stream
+    chunks back to the live voice session via voice_bridge."""
     token = os.environ.get("NEMO_APP_TOKEN", "").strip()
     if not token:
         return
@@ -138,13 +140,16 @@ def _kick_engine() -> None:
     host = (urllib.parse.urlparse(url).hostname or "").lower()
     is_loopback = host in ("127.0.0.1", "::1", "localhost")
 
-    def _post() -> None:
+    def _post(body: bytes) -> None:
         try:
             req = urllib.request.Request(
                 url,
-                data=b"",
+                data=body,
                 method="POST",
-                headers={"Authorization": f"Bearer {token}"},
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
             )
             ctx = None
             if url.startswith("https"):
@@ -156,7 +161,12 @@ def _kick_engine() -> None:
         except Exception:  # noqa: BLE001 — the engine poll is the fallback
             pass
 
-    threading.Thread(target=_post, daemon=True).start()
+    kick_body = (
+        json.dumps({"voice_session_id": voice_session_id}).encode()
+        if voice_session_id
+        else b""
+    )
+    threading.Thread(target=_post, args=(kick_body,), daemon=True).start()
 
 
 def dispatch(name: str, args: dict) -> str:
@@ -205,12 +215,14 @@ def _set(args: dict) -> str:
     )
 
 
-def notify_now(text: str) -> str:
+def notify_now(text: str, *, voice_session_id: str = "") -> str:
     """Surface `text` on the phone now (app-only path for "notify/text me").
 
     The voice server can't reach the app's WebSocket directly (the engine owns
     it), so insert an immediate reminder — the engine's loop picks it up within
     a minute and delivers it to the phone (shown + spoken via Edge TTS).
+    When voice_session_id is provided (VOICE_STREAM_BRAIN=1) the engine will
+    stream the result chunks back to the live voice session instead.
     """
     text = (text or "").strip()
     if not text or not _CHAT_ID:
@@ -228,15 +240,17 @@ def notify_now(text: str) -> str:
         con.commit()
     finally:
         con.close()
-    _kick_engine()  # wake the engine now instead of waiting for its poll
+    _kick_engine(voice_session_id=voice_session_id)
     return json.dumps({"status": "sent"})
 
 
-def delegate_task(task: str) -> str:
+def delegate_task(task: str, *, voice_session_id: str = "") -> str:
     """Hand a bigger/technical job to the engine brain (Claude Code) to run in
     the background. Reuses the immediate-reminder path: the engine's loop picks
     it up, does the work with its full tools, and reports the result on the
     phone when done — so the voice agent can ack and keep talking.
+    When voice_session_id is provided the engine streams clause chunks back to
+    the live voice session so Nemo can speak the result as it arrives.
     """
     task = (task or "").strip()
     if not task or not _CHAT_ID:
@@ -250,7 +264,7 @@ def delegate_task(task: str) -> str:
         "safe tools, then message him the result concisely when done.]\n"
         f"{_TASK_DELIM}\n{safe}\n{_TASK_DELIM}"
     )
-    notify_now(framed)
+    notify_now(framed, voice_session_id=voice_session_id)
     return json.dumps({"status": "delegated — working on it in the background"})
 
 
