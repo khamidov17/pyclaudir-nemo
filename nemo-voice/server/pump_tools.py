@@ -84,7 +84,7 @@ async def _run_bg_tool(link: QwenLink, bridge, name: str, args: dict) -> None:
         _deliver_via_engine(name, args, content)
 
 
-async def _handle_tool(link: QwenLink, bridge, item: dict) -> None:
+async def _handle_tool(link: QwenLink, bridge, item: dict, orchestrator=None) -> None:
     """Run a tool call and feed the result back so Nemo can keep talking."""
     name = item.get("name", "")
     call_id = item.get("call_id", "")
@@ -92,6 +92,13 @@ async def _handle_tool(link: QwenLink, bridge, item: dict) -> None:
         args = json.loads(item.get("arguments") or "{}")
     except json.JSONDecodeError:
         args = {}
+    # Voice weave-in: tag a delegate with this session's id + snapshot rev (NOT
+    # model-supplied) so the engine can stream the result back here and the
+    # orchestrator can drop it if the topic moves on. Injected after parsing the
+    # model's args; these keys never reach the model.
+    if orchestrator is not None and name == "delegate_task":
+        args["_voice_session_id"] = orchestrator.session_id
+        args["_voice_rev"] = orchestrator.snapshot.rev
     LOG.info("qwen function call: %s %s", name, args)
     if name in _BG_TOOLS:
         await _tool_output(

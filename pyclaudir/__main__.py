@@ -480,24 +480,27 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
     on_chunk = None
     _stream_brain = os.environ.get("VOICE_STREAM_BRAIN", "0").strip() == "1"
     vsid = engine._pending_voice_session_id
+    vrev = engine._pending_voice_rev
     if vsid:
         engine._pending_voice_session_id = ""
+        engine._pending_voice_rev = 0
     if _stream_brain and vsid:
         from .voice_bridge import post_chunk
         from .cc_worker.chunker import ClauseChunker
 
         _chunker = ClauseChunker()
-        _chunk_rev = [0]  # mutable cell shared with the closure
 
         async def _on_chunk(text: str, final: bool) -> None:
+            # `vrev` is the voice snapshot.rev captured at delegate time, echoed
+            # UNCHANGED on every chunk so the orchestrator can drop the whole
+            # answer if the user moved on (snapshot.rev advanced). NOT a per-chunk
+            # counter — every chunk of one answer carries the same rev.
             if final:
                 for c in _chunker.flush():
-                    _chunk_rev[0] += 1
-                    await post_chunk(vsid, c, True, _chunk_rev[0])
+                    await post_chunk(vsid, c, True, vrev)
                 return
             for c in _chunker.feed(text):
-                _chunk_rev[0] += 1
-                await post_chunk(vsid, c, False, _chunk_rev[0])
+                await post_chunk(vsid, c, False, vrev)
 
         on_chunk = _on_chunk
 

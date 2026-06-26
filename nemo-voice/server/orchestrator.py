@@ -57,8 +57,30 @@ class Orchestrator:
         self._speaking = False
         self._stash: list[tuple[str, int]] = []  # (text, rev) chunks parked on barge-in
         self._barge_ts: list[float] = []  # P4: recent barge timestamps
+        # Single-consumer FIFO queue so the clauses of one answer are woven in
+        # the order the engine produced them — a `create_task` per POST does NOT
+        # preserve order and would scramble a multi-clause answer.
+        self._chunk_q: asyncio.Queue[tuple[str, bool, int]] | None = None
+        self._consumer: asyncio.Task | None = None
         session_registry.register(session_id, self)
         LOG.info("orchestrator: session %s started", session_id[:8])
+
+    def enqueue_chunk(self, chunk: str, final: bool, rev: int) -> None:
+        """Called by the HTTP handler. Order-preserving: a single consumer task
+        drains the queue and injects chunks one at a time."""
+        if self._chunk_q is None:
+            self._chunk_q = asyncio.Queue()
+            self._consumer = asyncio.create_task(self._consume())
+        self._chunk_q.put_nowait((chunk, final, rev))
+
+    async def _consume(self) -> None:
+        assert self._chunk_q is not None
+        while True:
+            chunk, final, rev = await self._chunk_q.get()
+            try:
+                await self.on_background_chunk(chunk, final, rev)
+            except Exception as exc:  # noqa: BLE001 — never kill the consumer
+                LOG.warning("orchestrator: chunk handling failed: %s", exc)
 
     # ── pump callbacks ────────────────────────────────────────────────────────
 
@@ -133,9 +155,11 @@ class Orchestrator:
         await self._inject(bridge_text, True, cur_rev)
 
     async def _inject(self, chunk: str, final: bool, rev: int) -> None:  # noqa: ARG002
+        # This is the engine's actual ANSWER (or part of it) — Nemo should relay
+        # it, not treat it as vague context. Keep it natural / in his own words.
         text = (
-            f"[here is additional context from my engine — weave it naturally "
-            f"into your next spoken reply, do not read it verbatim:] {chunk}"
+            "[Your engine brain just produced this part of the answer — relay it "
+            f"to Avazbek now, naturally and in your own words:] {chunk}"
         )
         delivered = await self.link.inject_text_when_idle(text, sensitive=False)
         if not delivered:
@@ -166,7 +190,17 @@ class Orchestrator:
 
     def close(self) -> None:
         session_registry.unregister(self.session_id)
+        if self._consumer is not None:
+            self._consumer.cancel()
+            self._consumer = None
         self._stash.clear()
+        # Drop this session's rate-limit bucket so it doesn't leak.
+        try:
+            import voice_http
+
+            voice_http.forget_session(self.session_id)
+        except Exception:  # noqa: BLE001
+            pass
         LOG.info("orchestrator: session %s ended", self.session_id[:8])
 
 

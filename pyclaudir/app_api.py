@@ -282,13 +282,17 @@ class AppApiServer:
             if not _check_token(supplied):
                 raise HTTPException(401, "unauthorized")
             if self._engine is not None:
+                vrev = 0
                 try:
                     body = await request.json()
                     vsid = str(body.get("voice_session_id", "")).strip()
+                    vrev = int(body.get("voice_rev", 0))
                 except Exception:  # noqa: BLE001 — body is optional
                     vsid = ""
                 if vsid:
                     self._engine._pending_voice_session_id = vsid  # type: ignore[union-attr]
+                    # Echo this rev back on every chunk (topic-staleness marker).
+                    self._engine._pending_voice_rev = vrev  # type: ignore[union-attr]
                 self._engine.reminder_kick.set()  # type: ignore[union-attr]
             return {"status": "kicked"}
 
