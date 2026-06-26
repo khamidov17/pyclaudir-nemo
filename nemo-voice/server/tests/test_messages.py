@@ -7,8 +7,6 @@ import json
 import messages
 import pump_class
 import pump_tools
-import qwen_pump
-import qwen_realtime
 
 
 class FakeBridge:

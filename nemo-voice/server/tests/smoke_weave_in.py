@@ -35,7 +35,6 @@ from aiohttp import web  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import session_registry  # noqa: E402
 import voice_http  # noqa: E402
 from orchestrator import Orchestrator  # noqa: E402
 
