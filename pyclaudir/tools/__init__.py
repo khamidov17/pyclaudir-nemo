@@ -14,6 +14,7 @@ from .search_memories import SearchMemoriesTool
 from .send_voice_message import SendVoiceMessageTool
 from .synthesize_memory import SynthesizeMemoryWikiTool
 from .world_time import WorldTimeTool
+from .write_voice_profile import WriteVoiceProfileTool
 
 __all__ = [
     "CalculateTool",
@@ -27,4 +28,5 @@ __all__ = [
     "SendVoiceMessageTool",
     "SynthesizeMemoryWikiTool",
     "WorldTimeTool",
+    "WriteVoiceProfileTool",
 ]

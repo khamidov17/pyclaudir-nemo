@@ -71,3 +71,21 @@ def test_multiple_independent_sessions() -> None:
     assert session_registry.get("y") is o2
     assert session_registry.get("z") is o3
     assert session_registry.active_count() == 3
+
+
+def test_any_active_returns_none_when_empty() -> None:
+    assert session_registry.any_active() is None
+
+
+def test_any_active_returns_last_registered() -> None:
+    o1, o2 = object(), object()
+    session_registry.register("first", o1)
+    session_registry.register("last", o2)
+    assert session_registry.any_active() is o2
+
+
+def test_any_active_returns_none_after_unregister_all() -> None:
+    o = object()
+    session_registry.register("s", o)
+    session_registry.unregister("s")
+    assert session_registry.any_active() is None

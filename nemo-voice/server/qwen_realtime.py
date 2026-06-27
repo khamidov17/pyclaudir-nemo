@@ -63,21 +63,15 @@ def _load_persona() -> dict | None:
     try:
         con = sqlite3.connect(str(_MEMORY_DB), timeout=2.0)
         rows = con.execute(
-            "SELECT text FROM chunks WHERE source='memory' ORDER BY rowid DESC LIMIT 30"
+            "SELECT text FROM chunks WHERE source='voice_profile' LIMIT 1"
         ).fetchall()
         con.close()
-        for (text,) in rows:
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if (
-                isinstance(data, dict)
-                and "name" in data
-                and ("tone" in data or "topics" in data)
-            ):
-                return data
-        return None
+        if not rows:
+            return None
+        try:
+            return json.loads(rows[0][0])
+        except (json.JSONDecodeError, IndexError):
+            return None
     except Exception as exc:  # noqa: BLE001 — best-effort load, never block session
         LOG.debug("persona load skipped: %s", exc)
         return None

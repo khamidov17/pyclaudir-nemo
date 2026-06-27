@@ -162,6 +162,60 @@ async def test_vad_event_no_demote_below_threshold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_flush_stash_rev_guard_stops_mid_flush() -> None:
+    """If snapshot.rev bumps between chunks during flush, remaining chunks are dropped."""
+    with patch.dict(os.environ, {"VOICE_WEAVE_IN": "1"}):
+        import importlib
+        import orchestrator as orch_mod
+
+        importlib.reload(orch_mod)
+
+        call_count = 0
+
+        async def _inject_and_bump(text, *, sensitive):
+            nonlocal call_count
+            call_count += 1
+            # Simulate barge-in: bump rev after first inject
+            orch._stash.clear()  # side-channel, mimic what bump does
+            orch.snapshot.bump()
+            return True
+
+        link = _make_link()
+        link.inject_text_when_idle = AsyncMock(side_effect=_inject_and_bump)
+        orch = orch_mod.Orchestrator(
+            link=link, session_id="aaaaaaaa-0000-4000-8000-000000000010"
+        )
+        cur_rev = orch.snapshot.rev
+        orch._stash = [("chunk-A", cur_rev), ("chunk-B", cur_rev)]
+        await orch._flush_stash()
+        # Only the first inject fires; rev changed before second
+        assert call_count == 1
+        orch.close()
+
+
+@pytest.mark.asyncio
+async def test_m2_task_cancelled_on_close() -> None:
+    """close() cancels a running _m2_task so it doesn't outlive the session."""
+    import asyncio
+
+    orch = _make_orch()
+    cancelled = asyncio.Event()
+
+    async def _long_task() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    orch._m2_task = asyncio.create_task(_long_task())
+    await asyncio.sleep(0)  # let task start — reaches asyncio.sleep(60)
+    orch.close()
+    await asyncio.sleep(0)  # deliver CancelledError to the suspended coroutine
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
 async def test_vad_event_demotes_at_threshold() -> None:
     import orchestrator as orch_mod
 

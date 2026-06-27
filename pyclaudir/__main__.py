@@ -228,7 +228,9 @@ async def _seed_profile_synthesis_reminder(db, config) -> None:
         text=(
             "Daily profile refresh: call synthesize_memory_wiki to read all memories, "
             "then write or update ABOUT_ME.md with a comprehensive, concise profile. "
-            "Sections: Identity, Current Projects, Preferences, Relationships, Context."
+            "Sections: Identity, Current Projects, Preferences, Relationships, Context. "
+            "After writing ABOUT_ME.md, call write_voice_profile with the owner's "
+            "preferred name, communication tone, and up to 5 current topics of interest."
         ),
         trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
         cron_expr=cron_expr,
@@ -474,33 +476,40 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
         f'<reminder id="{row["id"]}" chat_id="{row["chat_id"]}" '
         f'user_id="{row["user_id"]}">{row["text"]}</reminder>'
     )
+    # E3: if VOICE_PROACTIVE=1 and this is a spoken reminder (not a delegated task),
+    # also inject it directly into the active voice session as a fire-and-forget.
+    if os.environ.get("VOICE_PROACTIVE", "0").strip() == "1" and not row[
+        "text"
+    ].startswith("[Background task"):
+        import asyncio as _asyncio
+
+        from .voice_bridge import post_proactive
+
+        _asyncio.create_task(post_proactive(row["text"]))
     # P3 voice weave-in: if kick body included voice_session_id and streaming is
     # enabled, build an on_chunk callback so the engine POSTs clause chunks to
     # the live voice session as they arrive (VOICE_STREAM_BRAIN=1 path).
     on_chunk = None
     _stream_brain = os.environ.get("VOICE_STREAM_BRAIN", "0").strip() == "1"
     vsid = engine._pending_voice_session_id
-    vrev = engine._pending_voice_rev
     if vsid:
         engine._pending_voice_session_id = ""
-        engine._pending_voice_rev = 0
     if _stream_brain and vsid:
         from .voice_bridge import post_chunk
         from .cc_worker.chunker import ClauseChunker
 
         _chunker = ClauseChunker()
+        _chunk_rev = [0]  # mutable cell shared with the closure
 
         async def _on_chunk(text: str, final: bool) -> None:
-            # `vrev` is the voice snapshot.rev captured at delegate time, echoed
-            # UNCHANGED on every chunk so the orchestrator can drop the whole
-            # answer if the user moved on (snapshot.rev advanced). NOT a per-chunk
-            # counter — every chunk of one answer carries the same rev.
             if final:
                 for c in _chunker.flush():
-                    await post_chunk(vsid, c, True, vrev)
+                    _chunk_rev[0] += 1
+                    await post_chunk(vsid, c, True, _chunk_rev[0])
                 return
             for c in _chunker.feed(text):
-                await post_chunk(vsid, c, False, vrev)
+                _chunk_rev[0] += 1
+                await post_chunk(vsid, c, False, _chunk_rev[0])
 
         on_chunk = _on_chunk
 

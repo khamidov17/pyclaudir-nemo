@@ -22,6 +22,7 @@ LOG = logging.getLogger("pyclaudir.voice_bridge")
 _VOICE_URL = os.environ.get("VOICE_SERVER_URL", "http://localhost:3001")
 _INTERNAL_TOKEN = os.environ.get("VOICE_INTERNAL_TOKEN", "").strip()
 _ENDPOINT = f"{_VOICE_URL.rstrip('/')}/internal/brain_result"
+_PROACTIVE_ENDPOINT = f"{_VOICE_URL.rstrip('/')}/internal/proactive"
 _TIMEOUT = aiohttp.ClientTimeout(total=2.0)
 _MAX_RETRIES = 1
 
@@ -38,6 +39,26 @@ def _get_session() -> aiohttp.ClientSession:
 
 def _sign(body: bytes) -> str:
     return hmac.new(_INTERNAL_TOKEN.encode(), body, hashlib.sha256).hexdigest()
+
+
+async def post_proactive(text: str) -> None:
+    """POST a spoken reminder text to the voice server's active session. Never raises."""
+    if not _INTERNAL_TOKEN:
+        return
+    body = json.dumps({"text": text}).encode("utf-8")
+    sig = _sign(body)
+    headers = {"Content-Type": "application/json", "X-Internal-Sig": sig}
+    try:
+        session = _get_session()
+        async with session.post(
+            _PROACTIVE_ENDPOINT, data=body, headers=headers
+        ) as resp:
+            if resp.status == 404:
+                LOG.debug("voice_bridge: no active voice session for proactive")
+            elif resp.status != 202:
+                LOG.warning("voice_bridge: proactive status %d", resp.status)
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("voice_bridge: proactive error: %s", exc)
 
 
 async def post_chunk(session_id: str, chunk: str, final: bool, rev: int) -> None:

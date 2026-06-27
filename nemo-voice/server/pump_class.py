@@ -13,7 +13,7 @@ import time
 import voice_history
 import voice_intent
 from qwen_link import QwenLink
-from voice_metrics import METRICS
+from voice_metrics import METRICS, record_ttfsw_ms
 
 from pump_tools import (
     _SessionCtx,
@@ -168,6 +168,9 @@ class _QwenPump:
         self._user_turn_ts = None
         METRICS.record_turn(latency_ms)
         LOG.info("turn: reply latency %dms", latency_ms)
+        sid = getattr(self._orchestrator, "session_id", "unknown")
+        tier = getattr(getattr(self._orchestrator, "snapshot", None), "route", "tier0")
+        record_ttfsw_ms(sid, latency_ms, tier, "voice")
 
     def _arm_turn_timer(self) -> None:
         if self._turn_timer:
@@ -210,9 +213,7 @@ class _QwenPump:
             task, self._pending_code_intent = self._pending_code_intent, None
             LOG.info("recovering missed code delegation")
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(
-                    self.link, self.bridge, task, self._orchestrator
-                )
+                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
             )
         if self._pending_search:
             query, self._pending_search = self._pending_search, None
@@ -238,9 +239,7 @@ class _QwenPump:
             task, self._pending_recall = self._pending_recall, None
             LOG.info("recovering recording recall → engine: %r", task)
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(
-                    self.link, self.bridge, task, self._orchestrator
-                )
+                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
             )
 
     async def _barge_in(self) -> None:
@@ -277,7 +276,7 @@ class _QwenPump:
                 except json.JSONDecodeError:
                     args = {}
                 await self._orchestrator.on_tool_call(name or "", args)
-            await _handle_tool(self.link, self.bridge, item, self._orchestrator)
+            await _handle_tool(self.link, self.bridge, item)
 
     async def _done(self, ev: dict) -> None:
         await self._complete_turn()

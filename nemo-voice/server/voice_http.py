@@ -138,6 +138,35 @@ async def handle_debug_latency(request: web.Request) -> web.Response:
     return web.json_response({"rows": rows})
 
 
+async def handle_proactive(request: web.Request) -> web.Response:
+    """POST /internal/proactive — engine injects a spoken reminder into the active session.
+
+    Body: {"text": "..."}. Same HMAC auth as /internal/brain_result.
+    Delivers to the most recently registered session, or 404 if none.
+    """
+    raw = await request.read()
+    sig = request.headers.get("X-Internal-Sig", "")
+    if not _verify_internal(raw, sig):
+        return web.Response(status=401)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return web.Response(status=400)
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return web.Response(status=400)
+    import session_registry
+
+    orch = session_registry.any_active()
+    if orch is None:
+        return web.Response(status=404)
+    import asyncio
+
+    chunk = f"[proactive reminder — speak this naturally, do not read verbatim:] {text}"
+    asyncio.create_task(orch.on_background_chunk(chunk, True, 0))  # type: ignore[attr-defined]
+    return web.Response(status=202)
+
+
 async def handle_latency_dashboard(_request: web.Request) -> web.Response:
     """Serve the static latency dashboard HTML (gated on DEBUG_DASHBOARD=1)."""
     if os.environ.get("DEBUG_DASHBOARD", "").strip() != "1":
@@ -178,6 +207,7 @@ def build_app(backend_name: str) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_post("/internal/brain_result", handle_brain_result)
+    app.router.add_post("/internal/proactive", handle_proactive)
     app.router.add_get("/debug/latency", handle_debug_latency)
     app.router.add_get("/debug/latency.html", handle_latency_dashboard)
     app.router.add_get("/{filename}", static)

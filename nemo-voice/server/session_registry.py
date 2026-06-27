@@ -34,3 +34,8 @@ def get(session_id: str) -> object | None:
 
 def active_count() -> int:
     return len(_registry)
+
+
+def any_active() -> object | None:
+    """Return the most recently registered Orchestrator, or None if no sessions."""
+    return next(reversed(_registry.values()), None)
