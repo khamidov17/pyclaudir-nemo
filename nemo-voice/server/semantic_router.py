@@ -12,9 +12,19 @@ TIER2 — route to the engine (CC) for code, planning, recall.
 
 from __future__ import annotations
 
+import os
+import re
 from enum import Enum
 
 import voice_intent
+
+_TIERS_ENABLED = os.environ.get("VOICE_TIERS", "0").strip() == "1"
+
+_TIER1_PATTERNS = [
+    r"\b(what is|what are|who is|when did|where is|how many|how much)\b",
+    r"\b(define|meaning of|capital of|currency of)\b",
+    r"\b(convert|translate)\b.{1,30}\b(to|into)\b",
+]
 
 
 class RouteDecision(str, Enum):
@@ -33,6 +43,8 @@ def route_tier(text: str) -> RouteDecision:
         return RouteDecision.TIER2_ENGINE
     if voice_intent.is_record_recall_intent(text):
         return RouteDecision.TIER2_ENGINE
+    if _TIERS_ENABLED and any(re.search(p, text.lower()) for p in _TIER1_PATTERNS):
+        return RouteDecision.TIER1_FAST
     # Search is handled in-band by Qwen background tool — keep at TIER0.
     # Messages intent: background tool, stays TIER0.
     return RouteDecision.TIER0_VOICE

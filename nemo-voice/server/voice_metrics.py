@@ -9,7 +9,46 @@ persistence — it resets on restart, which is fine for a liveness probe.
 
 from __future__ import annotations
 
+import logging
+import os
+import sqlite3
 import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+LOG = logging.getLogger("nemo.voice_metrics")
+
+_DB_PATH = Path(
+    os.environ.get(
+        "VOICE_METRICS_DB", str(Path(__file__).resolve().parent / "voice_metrics.db")
+    )
+)
+
+_TTFSW_DDL = """
+CREATE TABLE IF NOT EXISTS ttfsw (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    ms REAL NOT NULL,
+    tier TEXT NOT NULL,
+    route TEXT NOT NULL
+)
+"""
+
+
+def record_ttfsw_ms(session_id: str, ms: float, tier: str, route: str) -> None:
+    """Record TTFSW (time-to-first-spoken-word) in SQLite for the latency dashboard."""
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        with sqlite3.connect(_DB_PATH) as conn:
+            conn.execute(_TTFSW_DDL)
+            conn.execute(
+                "INSERT INTO ttfsw (session_id, ts, ms, tier, route) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, ts, ms, tier, route),
+            )
+    except sqlite3.Error as exc:
+        LOG.warning("voice_metrics: ttfsw insert failed: %s", exc)
 
 
 class _Metrics:

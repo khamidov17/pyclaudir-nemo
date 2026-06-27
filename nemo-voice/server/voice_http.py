@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -30,7 +31,7 @@ _UUID4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
 )
 # XML-tag-like injection patterns stripped from chunk text.
-_TAG_RE = re.compile(r"<[^>]{0,60}>")
+_TAG_RE = re.compile(r"<[^>]{0,80}>")
 # Per-session rate limit: max 60 POSTs/min to /internal/brain_result.
 _RATE: dict[str, list[float]] = defaultdict(list)
 _RATE_MAX = 60
@@ -60,12 +61,6 @@ def _rate_ok(session_id: str) -> bool:
         return False
     _RATE[session_id].append(now)
     return True
-
-
-def forget_session(session_id: str) -> None:
-    """Drop a session's rate-limit bucket on teardown so _RATE doesn't grow
-    unbounded across the process lifetime."""
-    _RATE.pop(session_id, None)
 
 
 async def handle_brain_result(request: web.Request) -> web.Response:
@@ -100,10 +95,55 @@ async def handle_brain_result(request: web.Request) -> web.Response:
     orch = session_registry.get(session_id)
     if orch is None:
         return web.Response(status=404)
-    # Enqueue (FIFO, single consumer) so a multi-clause answer is woven in the
-    # order the engine produced it — create_task per POST does not preserve order.
-    orch.enqueue_chunk(chunk, final, rev)
+    import asyncio
+
+    asyncio.create_task(orch.on_background_chunk(chunk, final, rev))
     return web.Response(status=202)
+
+
+def _bearer_ok(request: web.Request) -> bool:
+    """True if Authorization: Bearer matches VOICE_INTERNAL_TOKEN."""
+    if not _INTERNAL_TOKEN:
+        return False
+    auth = request.headers.get("Authorization", "")
+    provided = auth[7:] if auth.startswith("Bearer ") else ""
+    return hmac.compare_digest(provided, _INTERNAL_TOKEN)
+
+
+def _query_ttfsw() -> list[dict]:
+    """Return last 50 ttfsw rows as dicts, newest first."""
+    from voice_metrics import _DB_PATH, _TTFSW_DDL
+
+    cols = ("id", "session_id", "ts", "ms", "tier", "route")
+    with sqlite3.connect(_DB_PATH) as conn:
+        conn.execute(_TTFSW_DDL)
+        rows = conn.execute(
+            "SELECT id, session_id, ts, ms, tier, route "
+            "FROM ttfsw ORDER BY id DESC LIMIT 50"
+        ).fetchall()
+    return [dict(zip(cols, r)) for r in rows]
+
+
+async def handle_debug_latency(request: web.Request) -> web.Response:
+    """Return last 50 ttfsw rows as JSON. Requires Bearer VOICE_INTERNAL_TOKEN."""
+    if os.environ.get("DEBUG_DASHBOARD", "").strip() != "1":
+        return web.Response(status=404)
+    if not _bearer_ok(request):
+        return web.Response(status=401)
+    try:
+        rows = _query_ttfsw()
+    except sqlite3.Error as exc:
+        LOG.warning("debug_latency: query failed: %s", exc)
+        rows = []
+    return web.json_response({"rows": rows})
+
+
+async def handle_latency_dashboard(_request: web.Request) -> web.Response:
+    """Serve the static latency dashboard HTML (gated on DEBUG_DASHBOARD=1)."""
+    if os.environ.get("DEBUG_DASHBOARD", "").strip() != "1":
+        return web.Response(status=404)
+    html = (Path(__file__).parent / "static" / "latency.html").read_text()
+    return web.Response(text=html, content_type="text/html")
 
 
 def build_app(backend_name: str) -> web.Application:
@@ -138,6 +178,8 @@ def build_app(backend_name: str) -> web.Application:
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_post("/internal/brain_result", handle_brain_result)
+    app.router.add_get("/debug/latency", handle_debug_latency)
+    app.router.add_get("/debug/latency.html", handle_latency_dashboard)
     app.router.add_get("/{filename}", static)
     return app
 

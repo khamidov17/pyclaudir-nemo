@@ -16,6 +16,8 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
+from pathlib import Path
 
 import session_registry
 from qwen_link import QwenLink
@@ -26,13 +28,48 @@ LOG = logging.getLogger("nemo.orchestrator")
 
 _SHARED_CTX = os.environ.get("VOICE_SHARED_CONTEXT", "0").strip() == "1"
 _WEAVE_IN = os.environ.get("VOICE_WEAVE_IN", "0").strip() == "1"
+_THINKER = os.environ.get("VOICE_THINKER", "0").strip() == "1"
 
 # Self-barge detector (P4)
 _BARGE_THRESHOLD = int(os.environ.get("BARGE_IN_SELF_THRESHOLD", "3"))
 _BARGE_WINDOW_SEC = 10.0
 
-# Max chars of stashed chunk text before we give up and discard.
-_STASH_MAX_CHARS = 6_000
+# Max stashed chunks before we drop the oldest on overflow.
+_STASH_MAX_CHUNKS = 3
+
+# Shared memory DB — semantic_memory.py writes to memory_index.db, not pyclaudir.db.
+_DATA_DIR: Path = (
+    Path(os.environ.get("NEMO_VOICE_DATA_DIR", ""))
+    if os.environ.get("NEMO_VOICE_DATA_DIR")
+    else Path(__file__).resolve().parents[2] / "data"
+)
+_MEMORY_DB: Path = _DATA_DIR / "memory_index.db"
+
+
+async def _search_shared_memory(query: str, top_k: int = 3) -> list[str]:
+    """Keyword search against memory_index.db — same file semantic_memory.py writes."""
+
+    def _query() -> list[str]:
+        if not _MEMORY_DB.exists():
+            return []
+        try:
+            words = query.lower().split()[:6]
+            con = sqlite3.connect(str(_MEMORY_DB), timeout=1.0)
+            rows = con.execute(
+                "SELECT text FROM chunks WHERE source='memory' "
+                "ORDER BY rowid DESC LIMIT 50"
+            ).fetchall()
+            con.close()
+            scored = [
+                (sum(1 for w in words if w in t.lower()), t[:200]) for (t,) in rows
+            ]
+            scored = [(s, t) for s, t in scored if s > 0]
+            scored.sort(key=lambda x: -x[0])
+            return [t for _, t in scored[:top_k]]
+        except Exception:  # noqa: BLE001 — best-effort retrieval, never crash
+            return []
+
+    return await asyncio.to_thread(_query)
 
 
 def _text_item(chunk: str) -> dict:
@@ -56,41 +93,48 @@ class Orchestrator:
         self._speaking = False
         self._stash: list[tuple[str, int]] = []  # (text, rev) chunks parked on barge-in
         self._barge_ts: list[float] = []  # P4: recent barge timestamps
-        # Single-consumer FIFO queue so the clauses of one answer are woven in
-        # the order the engine produced them — a `create_task` per POST does NOT
-        # preserve order and would scramble a multi-clause answer.
-        self._chunk_q: asyncio.Queue[tuple[str, bool, int]] | None = None
-        self._consumer: asyncio.Task | None = None
+        self._m2_task: asyncio.Task[None] | None = None
         session_registry.register(session_id, self)
         LOG.info("orchestrator: session %s started", session_id[:8])
-
-    def enqueue_chunk(self, chunk: str, final: bool, rev: int) -> None:
-        """Called by the HTTP handler. Order-preserving: a single consumer task
-        drains the queue and injects chunks one at a time."""
-        if self._chunk_q is None:
-            self._chunk_q = asyncio.Queue()
-            self._consumer = asyncio.create_task(self._consume())
-        self._chunk_q.put_nowait((chunk, final, rev))
-
-    async def _consume(self) -> None:
-        assert self._chunk_q is not None
-        while True:
-            chunk, final, rev = await self._chunk_q.get()
-            try:
-                await self.on_background_chunk(chunk, final, rev)
-            except Exception as exc:  # noqa: BLE001 — never kill the consumer
-                LOG.warning("orchestrator: chunk handling failed: %s", exc)
 
     # ── pump callbacks ────────────────────────────────────────────────────────
 
     async def on_final_transcript(self, text: str) -> RouteDecision:
         """Called when the user's utterance is finalized (VAD done)."""
+        self.snapshot.reset_turn()
         self.snapshot.set_transcript(text)
         decision = route_tier(text)
         if _SHARED_CTX:
             self.snapshot.set_route(decision.value)
+        if _THINKER and decision != RouteDecision.TIER0_VOICE:
+            rev = self.snapshot.rev
+            self._m2_task = asyncio.create_task(self._m2_think(text, rev))
         LOG.debug("orchestrator: route=%s for %r", decision.value, text[:60])
         return decision
+
+    async def _m2_think(self, transcript: str, rev: int) -> None:
+        """M2 Thinker: async Haiku call during VAD silence to pre-think the answer."""
+        import haiku_reasoner
+
+        try:
+            memories = await asyncio.wait_for(
+                _search_shared_memory(transcript, top_k=3), timeout=0.5
+            )
+        except asyncio.TimeoutError:
+            memories = []
+        if self.snapshot.rev != rev:
+            return  # topic changed (barge-in) — discard stale result
+        mem_ctx = "\n".join(f"- {m}" for m in memories)
+        prompt = (
+            f"User said: {transcript}\n"
+            f"Context from memory:\n{mem_ctx}\n"
+            "In 1-2 short sentences, what is the most helpful thing to say first? "
+            "Be direct, no filler."
+        )
+        result = await haiku_reasoner.call(prompt, max_tokens=80, timeout=1.5)
+        if result and self.snapshot.rev == rev:
+            self.snapshot.set_thinker_result(result)
+            LOG.debug("orchestrator: m2 thinker result stored (%d chars)", len(result))
 
     async def on_agent_speaking(self, speaking: bool) -> None:
         """Called when Nemo starts or stops speaking audio."""
@@ -132,10 +176,9 @@ class Orchestrator:
     # ── internal helpers ──────────────────────────────────────────────────────
 
     def _park_chunk(self, chunk: str, rev: int) -> None:
-        total = sum(len(c) for c, _ in self._stash)
-        if total >= _STASH_MAX_CHARS:
-            LOG.warning("orchestrator: stash full — dropping chunk")
-            return
+        if len(self._stash) >= _STASH_MAX_CHUNKS:
+            LOG.warning("orchestrator: stash full — dropping oldest chunk")
+            self._stash.pop(0)
         self._stash.append((chunk, rev))
 
     async def _flush_stash(self) -> None:
@@ -146,19 +189,19 @@ class Orchestrator:
         if not to_inject:
             LOG.debug("orchestrator: stash discarded (rev moved on)")
             return
-        joined = " ".join(c for c, _ in to_inject)
         LOG.info("orchestrator: flushing %d stashed chunk(s)", len(to_inject))
-        bridge_text = (
-            f"[continuing the answer you just started — pick up naturally:] {joined}"
-        )
-        await self._inject(bridge_text, True, cur_rev)
+        last = len(to_inject) - 1
+        for i, (chunk, _r) in enumerate(to_inject):
+            if self.snapshot.rev != cur_rev:
+                break
+            await self._inject(chunk, final=(i == last), rev=cur_rev)
+            if i != last:
+                await asyncio.sleep(0.05)
 
     async def _inject(self, chunk: str, final: bool, rev: int) -> None:  # noqa: ARG002
-        # This is the engine's actual ANSWER (or part of it) — Nemo should relay
-        # it, not treat it as vague context. Keep it natural / in his own words.
         text = (
-            "[Your engine brain just produced this part of the answer — relay it "
-            f"to Avazbek now, naturally and in your own words:] {chunk}"
+            f"[here is additional context from my engine — weave it naturally "
+            f"into your next spoken reply, do not read it verbatim:] {chunk}"
         )
         delivered = await self.link.inject_text_when_idle(text, sensitive=False)
         if not delivered:
@@ -189,17 +232,9 @@ class Orchestrator:
 
     def close(self) -> None:
         session_registry.unregister(self.session_id)
-        if self._consumer is not None:
-            self._consumer.cancel()
-            self._consumer = None
         self._stash.clear()
-        # Drop this session's rate-limit bucket so it doesn't leak.
-        try:
-            import voice_http
-
-            voice_http.forget_session(self.session_id)
-        except Exception:  # noqa: BLE001
-            pass
+        if self._m2_task and not self._m2_task.done():
+            self._m2_task.cancel()
         LOG.info("orchestrator: session %s ended", self.session_id[:8])
 
 

@@ -25,6 +25,16 @@ _ENDPOINT = f"{_VOICE_URL.rstrip('/')}/internal/brain_result"
 _TIMEOUT = aiohttp.ClientTimeout(total=2.0)
 _MAX_RETRIES = 1
 
+_session: aiohttp.ClientSession | None = None
+
+
+def _get_session() -> aiohttp.ClientSession:
+    """Lazily create and reuse a single pooled ClientSession."""
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(timeout=_TIMEOUT)
+    return _session
+
 
 def _sign(body: bytes) -> str:
     return hmac.new(_INTERNAL_TOKEN.encode(), body, hashlib.sha256).hexdigest()
@@ -46,15 +56,15 @@ async def post_chunk(session_id: str, chunk: str, final: bool, rev: int) -> None
     headers = {"Content-Type": "application/json", "X-Internal-Sig": sig}
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
-                async with session.post(_ENDPOINT, data=body, headers=headers) as resp:
-                    if resp.status in (202, 404):
-                        return
-                    LOG.warning(
-                        "voice_bridge: unexpected status %d (attempt %d)",
-                        resp.status,
-                        attempt,
-                    )
+            session = _get_session()
+            async with session.post(_ENDPOINT, data=body, headers=headers) as resp:
+                if resp.status in (202, 404):
+                    return
+                LOG.warning(
+                    "voice_bridge: unexpected status %d (attempt %d)",
+                    resp.status,
+                    attempt,
+                )
         except asyncio.TimeoutError:
             LOG.debug("voice_bridge: timeout on attempt %d", attempt)
         except Exception as exc:  # noqa: BLE001

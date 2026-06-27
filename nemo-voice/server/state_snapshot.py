@@ -36,6 +36,7 @@ class StateSnapshot:
     plan: list[str] = field(default_factory=list)
     retrieved_memories: list[str] = field(default_factory=list)
     route: str = "tier0"
+    thinker_result: str = ""
     rev: int = 0
 
     def bump(self) -> None:
@@ -52,13 +53,20 @@ class StateSnapshot:
 
     def set_transcript(self, text: str) -> None:
         self.corrected_text = text[:4000]
+        self.thinker_result = ""
         self.bump()
 
     def set_route(self, route: str) -> None:
         self.route = route
         self.bump()
 
+    def set_thinker_result(self, text: str) -> None:
+        self.thinker_result = text
+
     def add_entity(self, key: str, value: Any) -> None:
+        if len(self.entities) >= 20:
+            oldest_key = next(iter(self.entities))
+            del self.entities[oldest_key]
         self.entities[key[:80]] = _sanitize_value(value)
 
     def to_slice(self) -> dict[str, Any]:
