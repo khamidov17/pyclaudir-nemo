@@ -33,6 +33,25 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _initVoice();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Wire update-prompt listener here so it's never called from build().
+    final updater = context.read<UpdateService>();
+    updater.addListener(_onUpdateChanged);
+  }
+
+  void _onUpdateChanged() {
+    _maybePromptUpdate(context.read<UpdateService>());
+  }
+
+  @override
+  void dispose() {
+    context.read<UpdateService>().removeListener(_onUpdateChanged);
+    _errorSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _initVoice() async {
     final voice = context.read<VoiceService>();
     final nemo = context.read<NemoService>();
@@ -46,7 +65,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       );
     });
     await nemo.connect();
-    await context.read<UpdateService>().checkForUpdate(nemo.serverUrl);
+    // Update check runs once at launch (main.dart, 5s delay). No repeat here.
 
     // TTS playback is wired app-globally in main.dart so proactive audio
     // (reminders/briefings) plays on any screen — not duplicated here.
@@ -178,7 +197,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Widget _updateBanner() {
     return Consumer<UpdateService>(
       builder: (_, updater, __) {
-        _maybePromptUpdate(updater);
         if (!updater.updateAvailable && !updater.isDownloading) {
           return const SizedBox.shrink();
         }
@@ -328,11 +346,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    _errorSub?.cancel();
-    super.dispose();
-  }
 }
 
 /// Secondary, tucked-away list of text conversations.

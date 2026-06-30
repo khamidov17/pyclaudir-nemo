@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -54,6 +55,7 @@ class _VisionModeScreenState extends State<VisionModeScreen>
     with WidgetsBindingObserver {
   CameraController? _controller;
   bool _ready = false;
+  bool _disposed = false;
   Timer? _idle;
   CameraLensDirection _lens = CameraLensDirection.back;
 
@@ -83,7 +85,7 @@ class _VisionModeScreenState extends State<VisionModeScreen>
         enableAudio: false, // P0: never take the mic — voice owns it
       );
       await c.initialize();
-      if (!mounted) {
+      if (_disposed || !mounted) {
         await c.dispose();
         return;
       }
@@ -118,19 +120,25 @@ class _VisionModeScreenState extends State<VisionModeScreen>
     if (c == null || !_ready || !c.value.isInitialized) return null;
     _resetIdle();
     try {
-      final file = await c.takePicture();
-      return base64Encode(await file.readAsBytes());
+      final xfile = await c.takePicture();
+      try {
+        return base64Encode(await xfile.readAsBytes());
+      } finally {
+        File(xfile.path).delete().catchError((Object _) {});
+      }
     } catch (_) {
       return null;
     }
   }
 
   void _resetIdle() {
+    if (!mounted) return;
     _idle?.cancel();
     _idle = Timer(const Duration(seconds: 30), _close);
   }
 
   void _close() {
+    _idle?.cancel();
     if (mounted) Navigator.of(context).maybePop();
   }
 
@@ -141,6 +149,7 @@ class _VisionModeScreenState extends State<VisionModeScreen>
     // live for a frame or two), then close the screen.
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
+      _disposed = true;
       _idle?.cancel();
       _ready = false;
       final c = _controller;
@@ -152,9 +161,10 @@ class _VisionModeScreenState extends State<VisionModeScreen>
 
   @override
   void dispose() {
+    _disposed = true;
     _idle?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    VisionMode._active = null;
+    if (identical(VisionMode._active, this)) VisionMode._active = null;
     _controller?.dispose();
     super.dispose();
   }

@@ -83,29 +83,24 @@ class AudioEffects(private val context: Context) {
             Log.w(tag, "could not force speakerphone: ${e.message}")
         }
 
-        // Effects on the global output mix (session 0). Guarded by isAvailable().
+        // Capture-side effects require the AudioRecord session ID, not session 0.
+        // Session 0 is a no-op for AEC/NS/AGC on most devices. The Flutter `record`
+        // plugin doesn't expose audioSessionId; until it does (or the path is replaced
+        // with native AudioRecord), we skip software effects and rely on hardware AEC
+        // that MODE_IN_COMMUNICATION engages on the audio path automatically.
+        // TODO: pass capture session ID via MethodChannel when plugin exposes it.
         val aecAvailable = AcousticEchoCanceler.isAvailable()
         val nsAvailable = NoiseSuppressor.isAvailable()
         val agcAvailable = AutomaticGainControl.isAvailable()
-
-        if (aecAvailable && aec == null) {
-            aec = tryCreate("AEC") { AcousticEchoCanceler.create(0) }
-                ?.also { it.enabled = true }
-        }
-        if (nsAvailable && ns == null) {
-            ns = tryCreate("NS") { NoiseSuppressor.create(0) }
-                ?.also { it.enabled = true }
-        }
-        if (agcAvailable && agc == null) {
-            agc = tryCreate("AGC") { AutomaticGainControl.create(0) }
-                ?.also { it.enabled = true }
+        if (aecAvailable || nsAvailable || agcAvailable) {
+            Log.d(tag, "AEC/NS/AGC available but skipped — capture session ID unknown")
         }
 
         val status = mapOf(
             "modeInCommunication" to modeOk,
             "speakerphone" to speakerOk,
             "aecAvailable" to aecAvailable,
-            "aecAttached" to (aec != null),
+            "aecAttached" to false, // software AEC skipped until capture session ID is available
             "nsAvailable" to nsAvailable,
             "nsAttached" to (ns != null),
             "agcAvailable" to agcAvailable,

@@ -50,7 +50,14 @@ class WakeWordService extends ChangeNotifier {
   Future<void> init() async {}
 
   Future<dynamic> _onNative(MethodCall call) async {
+    if (call.method == 'onWakeWordError') {
+      debugPrint('WakeWordService: mic error — ${call.arguments}');
+      _running = false;
+      notifyListeners();
+      return;
+    }
     if (call.method != 'onWakeWord') return;
+    if (!_running) return; // stop() may have arrived before this native callback
     // Debounce so one utterance fires once (the engine has its own cooldown
     // too, but a short guard here is cheap insurance).
     final now = DateTime.now();
@@ -60,8 +67,19 @@ class WakeWordService extends ChangeNotifier {
     onWakeWord?.call();
   }
 
+  bool _starting = false;
+
   Future<void> start() async {
-    if (_running) return;
+    if (_running || _starting) return;
+    _starting = true;
+    try {
+      await _start();
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _start() async {
     if (!await isEnabled()) {
       debugPrint('WakeWordService: disabled (opt in via Settings)');
       try {
@@ -85,18 +103,17 @@ class WakeWordService extends ChangeNotifier {
   }
 
   Future<void> stop() async {
-    _running = false;
     try {
       await _channel.invokeMethod('stop');
     } catch (_) {}
+    _running = false;
     notifyListeners();
     debugPrint('WakeWordService: stopped');
   }
 
   @override
   void dispose() {
-    _running = false;
-    _channel.invokeMethod('stop');
+    stop(); // unawaited in dispose — best-effort, fire-and-forget
     super.dispose();
   }
 }

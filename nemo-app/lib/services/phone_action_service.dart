@@ -16,13 +16,22 @@ class PhoneActionService {
   final BuildContext? Function() _contextProvider;
   StreamSubscription? _sub;
 
+  // Serial execution queue — accessibility gestures must not interleave.
+  Future<void> _queue = Future.value();
+
   PhoneActionService(this._nemo, this._executor, this._contextProvider);
 
   void start() {
     _sub = _nemo.actions.listen(_execute);
   }
 
-  Future<void> _execute(Map<String, dynamic> data) async {
+  void _execute(Map<String, dynamic> data) {
+    _queue = _queue
+        .then((_) => _run(data))
+        .catchError((Object e) => debugPrint('[phone_action] queue error: $e'));
+  }
+
+  Future<void> _run(Map<String, dynamic> data) async {
     final id = data['id'] as String? ?? '';
     final cmd = (data['command'] as String? ?? '').trim();
     if (id.isEmpty || cmd.isEmpty) return;
@@ -33,10 +42,17 @@ class PhoneActionService {
       await _notification.invokeMethod('showRemoteControl').catchError((_) {});
     }
 
-    debugPrint('[phone_action] executing: $cmd (id=$id)');
-    final r = await _executor.execute(cmd, context: _contextProvider());
-    _nemo.sendActionResult(id,
-        ok: r.ok, text: r.text, error: r.error, imageB64: r.imageB64);
+    debugPrint('[phone_action/text] executing: $cmd (id=text:$id)');
+    try {
+      final r = await _executor.execute(cmd, context: _contextProvider());
+      _nemo.sendActionResult(id,
+          ok: r.ok, text: r.text, error: r.error, imageB64: r.imageB64);
+    } catch (e) {
+      debugPrint('[phone_action] error: $e');
+      _nemo.sendActionResult(id, ok: false, error: e.toString());
+    } finally {
+      await _notification.invokeMethod('hideRemoteControl').catchError((_) {});
+    }
   }
 
   void dispose() {

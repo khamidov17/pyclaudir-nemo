@@ -16,6 +16,9 @@ class ChatStorage {
     return openDatabase(
       p.join(dir, 'nemo_chats.db'),
       version: 1,
+      onUpgrade: (db, oldVersion, newVersion) async {
+        // Migrations go here when version is bumped — keep this handler even if empty.
+      },
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE sessions(
@@ -54,8 +57,10 @@ class ChatStorage {
 
   static Future<void> deleteSession(String id) async {
     final d = await db;
-    await d.delete('sessions', where: 'id=?', whereArgs: [id]);
-    await d.delete('messages', where: 'session_id=?', whereArgs: [id]);
+    await d.transaction((txn) async {
+      await txn.delete('sessions', where: 'id=?', whereArgs: [id]);
+      await txn.delete('messages', where: 'session_id=?', whereArgs: [id]);
+    });
   }
 
   static Future<void> updateSessionMeta(String id, String lastMessage) async {
@@ -74,11 +79,17 @@ class ChatStorage {
   }
 
   static Future<void> saveMessage(Message m) async {
-    await (await db).insert('messages', m.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
-    await updateSessionMeta(m.sessionId, m.text.length > 60
-        ? '${m.text.substring(0, 60)}…'
-        : m.text);
+    final d = await db;
+    final snippet = m.text.length > 60 ? '${m.text.substring(0, 60)}…' : m.text;
+    await d.transaction((txn) async {
+      await txn.insert('messages', m.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      await txn.update(
+        'sessions',
+        {'updated_at': DateTime.now().millisecondsSinceEpoch, 'last_message': snippet},
+        where: 'id=?', whereArgs: [m.sessionId],
+      );
+    });
   }
 
   static Future<void> deleteMessage(String id) async {

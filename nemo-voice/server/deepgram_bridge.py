@@ -35,7 +35,7 @@ async def _handle_function_calls(event: dict, deepgram_ws, bridge) -> None:
             args = json.loads(fn.get("arguments") or "{}")
         except json.JSONDecodeError:
             args = {}
-        LOG.info("voice function call: %s %s", name, args)
+        LOG.debug("voice function call: %s (args at DEBUG only)", name)
         content = await voice_brain.dispatch(name, args, bridge)
         resp: dict = {
             "type": "FunctionCallResponse",

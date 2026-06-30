@@ -11,9 +11,11 @@ import json
 import logging
 import os
 
+import phone_tools as _phone_tools
 import qwen_usage
 import reminders
 import voice_brain
+from error_journal import log_error, log_warn
 from qwen_link import QwenLink
 
 LOG = logging.getLogger("nemo.qwen_pump")
@@ -21,6 +23,8 @@ LOG = logging.getLogger("nemo.qwen_pump")
 _QWEN_MODEL = os.environ.get("QWEN_REALTIME_MODEL", "qwen3.5-omni-plus-realtime")
 _BG_TOOLS: frozenset[str] = frozenset({"web_search", "look"})
 _SENSITIVE_TOOLS: frozenset[str] = frozenset({"read_messages"})
+# Phone-action tools that block synchronously on the phone — need extended watchdog.
+_PHONE_ACTION_TOOL_NAMES: frozenset[str] = frozenset(_phone_tools.PHONE_TOOL_NAMES)
 
 
 # ── SessionCtx ────────────────────────────────────────────────────────────────
@@ -66,6 +70,7 @@ async def _run_bg_tool(link: QwenLink, bridge, name: str, args: dict) -> None:
         content = await voice_brain.dispatch(name, args, bridge)
     except Exception as exc:  # noqa: BLE001
         content = json.dumps({"error": str(exc)})
+        log_error(f"voice/tool/{name}", str(exc))
     if sensitive:
         text = (
             "[Avazbek asked to check his messages. Give a SHORT, natural, "
@@ -81,6 +86,7 @@ async def _run_bg_tool(link: QwenLink, bridge, name: str, args: dict) -> None:
         )
     delivered = await link.inject_text_when_idle(text, sensitive=sensitive)
     if not delivered and not sensitive:
+        log_warn(f"voice/tool/{name}", "session gone before result could be spoken — fell back to phone push")
         _deliver_via_engine(name, args, content)
 
 
@@ -92,14 +98,14 @@ async def _handle_tool(link: QwenLink, bridge, item: dict, orchestrator=None) ->
         args = json.loads(item.get("arguments") or "{}")
     except json.JSONDecodeError:
         args = {}
-    # Voice weave-in: tag a delegate with this session's id + snapshot rev (NOT
-    # model-supplied) so the engine can stream the result back here and the
-    # orchestrator can drop it if the topic moves on. Injected after parsing the
-    # model's args; these keys never reach the model.
+    # Weave-in: tag delegate_task with this session's id + snapshot rev so the
+    # engine can stream clause chunks back. Keys injected AFTER arg parsing so
+    # the model can never forge them via its own arguments.
     if orchestrator is not None and name == "delegate_task":
         args["_voice_session_id"] = orchestrator.session_id
         args["_voice_rev"] = orchestrator.snapshot.rev
-    LOG.info("qwen function call: %s %s", name, args)
+    LOG.info("qwen function call: %s", name)  # args may contain PII — debug only
+    LOG.debug("qwen function call args: %s", args)
     if name in _BG_TOOLS:
         await _tool_output(
             link,
@@ -111,6 +117,13 @@ async def _handle_tool(link: QwenLink, bridge, item: dict, orchestrator=None) ->
         link.spawn_bg(lambda: _run_bg_tool(link, bridge, name, args))
         return
     content = await voice_brain.dispatch(name, args, bridge)
+    # Log tool errors so they appear in the daily review journal.
+    try:
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and parsed.get("error"):
+            log_error(f"voice/tool/{name}", str(parsed["error"]))
+    except Exception:  # noqa: BLE001
+        pass
     await _tool_output(link, call_id, content)
 
 

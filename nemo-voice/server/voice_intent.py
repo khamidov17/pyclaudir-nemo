@@ -205,8 +205,6 @@ async def recover_delegate(link, bridge, task: str, orchestrator=None) -> None:
     import voice_brain
 
     args: dict = {"task": task}
-    # Same weave-in tagging as the normal tool path so a recovered delegate also
-    # streams its result back to this session.
     if orchestrator is not None:
         args["_voice_session_id"] = orchestrator.session_id
         args["_voice_rev"] = orchestrator.snapshot.rev

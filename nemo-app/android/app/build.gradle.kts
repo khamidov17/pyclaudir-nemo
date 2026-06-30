@@ -78,4 +78,6 @@ dependencies {
     // spotter replacing the heavy Vosk STT. Fully offline, no vendor key.
     implementation("xyz.rementia:openwakeword:0.1.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    // Encrypted SharedPreferences for notification buffer (N-05).
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }

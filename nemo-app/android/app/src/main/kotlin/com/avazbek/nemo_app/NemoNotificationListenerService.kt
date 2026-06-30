@@ -3,11 +3,15 @@ package com.avazbek.nemo_app
 import android.app.Notification
 import android.app.Person
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import java.util.concurrent.Executors
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -60,7 +64,10 @@ class NemoNotificationListenerService : NotificationListenerService() {
      * MessagingStyle.
      */
     private fun extractSenderAndText(extras: Bundle): Pair<String, String>? {
-        val msgs = extras.getParcelableArray(Notification.EXTRA_MESSAGES)
+        val msgs = if (Build.VERSION.SDK_INT >= 33)
+            extras.getParcelableArray(Notification.EXTRA_MESSAGES, Bundle::class.java)
+        else
+            @Suppress("DEPRECATION") extras.getParcelableArray(Notification.EXTRA_MESSAGES)
         if (msgs != null && msgs.isNotEmpty()) {
             val last = msgs.last() as? Bundle
             val body = last?.getCharSequence("text")?.toString() ?: ""
@@ -96,6 +103,9 @@ class NemoNotificationListenerService : NotificationListenerService() {
         private const val KEY_ALLOW = "allowlist"
         private const val MAX_ENTRIES = 50
         private const val MAX_TEXT = 200
+        // Single-thread executor replaces @Synchronized; the executor serializes
+        // calls without blocking the Binder notification thread (ANR risk, N-03).
+        private val _executor = Executors.newSingleThreadExecutor()
 
         // Review decision: Telegram + WhatsApp only by default (SMS is the OTP
         // channel and is left OUT). User can extend the allowlist later.
@@ -105,7 +115,7 @@ class NemoNotificationListenerService : NotificationListenerService() {
         // 4-8 digit code EVEN when split by spaces/hyphens ("12 345", "123-456")
         // — a contiguous-only regex leaked spaced codes to the cloud. Aggressive
         // by design; safety beats completeness (a redacted year/price is fine).
-        private val CODE_RE = Regex("\\b\\d(?:[\\s-]?\\d){3,7}\\b")
+        private val CODE_RE = Regex("\\b\\d(?:[\\s-]?\\d){3,11}\\b")
 
         fun redact(s: String): String = CODE_RE.replace(s, "[code]")
 
@@ -114,21 +124,22 @@ class NemoNotificationListenerService : NotificationListenerService() {
             return csv.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         }
 
-        @Synchronized
         fun push(ctx: Context, key: String, entry: JSONObject) {
-            val p = prefs(ctx)
-            val arr = JSONArray(p.getString(KEY_BUF, "[]"))
-            val kept = JSONArray()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                if (o.optString("key") != key) kept.put(o) // drop the prior update
+            _executor.execute {
+                val p = prefs(ctx)
+                val arr = JSONArray(p.getString(KEY_BUF, "[]"))
+                val kept = JSONArray()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    if (o.optString("key") != key) kept.put(o)
+                }
+                entry.put("key", key)
+                kept.put(entry)
+                val start = maxOf(0, kept.length() - MAX_ENTRIES)
+                val capped = JSONArray()
+                for (i in start until kept.length()) capped.put(kept.getJSONObject(i))
+                p.edit().putString(KEY_BUF, capped.toString()).apply()
             }
-            entry.put("key", key)
-            kept.put(entry)
-            val start = maxOf(0, kept.length() - MAX_ENTRIES)
-            val capped = JSONArray()
-            for (i in start until kept.length()) capped.put(kept.getJSONObject(i))
-            p.edit().putString(KEY_BUF, capped.toString()).apply()
         }
 
         /** Buffer as a JSON array string (oldest→newest), without the internal key. */
@@ -151,11 +162,26 @@ class NemoNotificationListenerService : NotificationListenerService() {
             val flat = Settings.Secure.getString(
                 ctx.contentResolver, "enabled_notification_listeners"
             ) ?: return false
-            return flat.contains(ctx.packageName)
+            val cn = android.content.ComponentName(
+                ctx, NemoNotificationListenerService::class.java
+            ).flattenToString()
+            // Use exact component match — flat.contains(cn) would match a partial
+            // package name prefix (e.g. com.foo matching com.foobar).
+            return flat.split(':').any { it == cn }
         }
 
-        private fun prefs(ctx: Context) =
+        private fun prefs(ctx: Context): SharedPreferences = try {
+            val key = MasterKey.Builder(ctx)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                ctx, PREFS, key,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+            )
+        } catch (_: Throwable) {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        }
 
         private fun appLabel(ctx: Context, pkg: String): String = try {
             val pm = ctx.packageManager

@@ -20,11 +20,11 @@ class BiometricService {
   // authenticated, owner-only server path.)
   // 'camera' is NOT gated: the `look` vision tool only fires on an explicit
   // spoken request ("what is this?"), so the request itself is the consent.
-  // 'type' was the last gated verb, but on this single-owner device it caused
-  // repeated MIUI local_auth failures for no real security gain — the server
-  // path is already owner-authenticated, TLS, and device-pinned, so a non-owner
-  // can't issue commands. Nothing is gated now. Re-add a verb here to gate it.
-  static const _sensitiveVerbs = <String>{};
+  // 'type' is NOT gated: MIUI local_auth failures broke voice functionality
+  // for no real gain — server path is owner-authenticated, TLS, and cert-pinned.
+  // 'screenshot' IS gated: screen capture can expose sensitive data (banking,
+  // messages) and doesn't need to be instant-response like camera.
+  static const _sensitiveVerbs = <String>{'screenshot', 'type'};
 
   static bool isSensitive(String command) =>
       _sensitiveVerbs.contains(command.split(' ').first.toLowerCase());

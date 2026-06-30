@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:provider/provider.dart';
@@ -59,7 +60,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (on) {
       // The foreground service is what keeps wake-word listening alive when the
       // app is backgrounded / screen off — without it Android suspends the app.
-      await BackgroundWakeWordService.start();
+      await BackgroundWakeWordService.start(
+        statusText: 'Listening for "Hey Nemo"…',
+      );
       await wake.start();
     } else {
       await wake.stop();
@@ -105,12 +108,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       await SecureNet.resetPin();
     }
 
-    // Reconfigure the live NemoService
+    // Reconfigure the live NemoService and force a reconnect with new creds.
     if (mounted) {
-      context.read<NemoService>().configure(
-            _urlController.text.trim(),
-            _tokenController.text.trim(),
-          );
+      final nemo = context.read<NemoService>();
+      nemo.disconnect(); // close existing connection first
+      nemo.configure(   // resets _manualDisconnect=false + stores new creds
+        _urlController.text.trim(),
+        _tokenController.text.trim(),
+      );
+      unawaited(nemo.connect()); // reconnect; auto-retry enabled by configure()
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Saved — reconnecting…')),
       );

@@ -142,6 +142,7 @@ object IntentActions {
                 putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            if (activity.packageManager.resolveActivity(i, 0) == null) return false
             activity.startActivity(i)
             true
         } catch (e: Exception) {
@@ -159,6 +160,7 @@ object IntentActions {
                 putExtra(AlarmClock.EXTRA_SKIP_UI, true)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            if (activity.packageManager.resolveActivity(i, 0) == null) return false
             activity.startActivity(i)
             true
         } catch (e: Exception) {

@@ -5,6 +5,7 @@ import 'phone_command_executor.dart';
 import 'voice_chat_service.dart';
 import 'voice_debug_stats.dart';
 import 'wake_word_service.dart';
+import '../screens/vision_mode_screen.dart';
 
 export 'voice_debug_stats.dart';
 
@@ -67,6 +68,8 @@ class VoiceSessionController extends ChangeNotifier {
   int _turnChunks = 0;
   int _turnBytes = 0;
   bool _busy = false;
+  bool _nemoSpeakingBeforeReconnect = false;
+  StreamSubscription<int>? _underrunSub;
   // Bumped on every session boundary (reconnect/stop). A pending unmute timer
   // captures the generation it was armed under and no-ops if it changed, so a
   // stale timer from a previous session can never reopen the mic.
@@ -80,6 +83,17 @@ class VoiceSessionController extends ChangeNotifier {
     // Stream each agent PCM chunk straight to the native player and advance
     // the playback-end clock (24kHz·16-bit mono = 48000 bytes/sec).
     _voice.audioOut.listen((chunk) {
+      // First chunk may arrive before agent_audio_start — mute proactively so
+      // Nemo's own voice can't echo back into Deepgram as a phantom barge-in.
+      // Guard on isActive (not a captured gen): gen is bumped on stop() so a
+      // captured value goes stale after the first reconnect, breaking this guard
+      // for every subsequent session. isActive=false drops chunks from a dying
+      // session and is always current.
+      if (!kFullDuplex && !nemoSpeaking && isActive) {
+        _voice.setMuted(true);
+        nemoSpeaking = true;
+        notifyListeners();
+      }
       _player.write(chunk);
       final now = DateTime.now().millisecondsSinceEpoch;
       if (_estPlaybackEndMs < now) _estPlaybackEndMs = now;
@@ -87,10 +101,12 @@ class VoiceSessionController extends ChangeNotifier {
       _turnChunks++;
       _turnBytes += chunk.length;
     });
-    _voice.controls.listen(_onControl);
-    _voice.actions.listen(_onAction);
+    _voice.controls.listen(_onControl,
+        onError: (Object e) => _add('voice control error: $e'));
+    _voice.actions.listen(_onAction,
+        onError: (Object e) => _add('voice action error: $e'));
     _voice.errors.listen(_add);
-    _player.underruns.listen((n) => _add('⚠ playback gap · underrun #$n'));
+    _underrunSub = _player.underruns.listen((n) => _add('⚠ playback gap · underrun #$n'));
     _voice.addListener(notifyListeners);
   }
 
@@ -109,12 +125,16 @@ class VoiceSessionController extends ChangeNotifier {
     } else if (signal == 'turn_complete') {
       final secs = (_turnBytes / 48000).toStringAsFixed(1);
       _add('■ turn done · $_turnChunks chunks · ${secs}s audio');
+      // Clear speaking immediately so barge-ins during the drain window aren't
+      // suppressed. Mic stays muted until the AudioTrack buffer drains.
+      nemoSpeaking = false;
+      notifyListeners();
       // Resume the mic only once the buffered audio has finished playing.
-      // +1100ms tail: the AudioTrack buffers ~800ms, so audio keeps playing
-      // after the last byte we handed it — reopening earlier echoes the tail
-      // back in as a phantom barge-in.
+      // +1300ms tail: AudioTrack buffers ~1200ms (57600 bytes @ 48000 B/s), so
+      // audio keeps playing after the last byte — reopening earlier echoes the
+      // tail back as a phantom barge-in.
       final remaining =
-          _estPlaybackEndMs - DateTime.now().millisecondsSinceEpoch + 1100;
+          _estPlaybackEndMs - DateTime.now().millisecondsSinceEpoch + 1300;
       _unmuteTimer?.cancel();
       final gen = _gen;
       _unmuteTimer = Timer(
@@ -122,7 +142,6 @@ class VoiceSessionController extends ChangeNotifier {
         () {
           if (gen != _gen) return; // stale — a reconnect/stop happened since
           _voice.setMuted(false);
-          nemoSpeaking = false;
           _add('🎤 mic open');
           _resetIdle(); // user's turn — idle clock starts now
         },
@@ -141,6 +160,7 @@ class VoiceSessionController extends ChangeNotifier {
           : 0;
       debugStats = debugStats.copyWith(bargeInLatencyMs: latencyMs);
       _bargeInStartMs = 0;
+      nemoSpeaking = false;
       _add('✋ barge-in → flush');
       _player.flush();
       _estPlaybackEndMs = 0;
@@ -161,16 +181,23 @@ class VoiceSessionController extends ChangeNotifier {
       // Connection dropped — new session boundary: bump the generation so any
       // pending unmute timer from the old session can't fire. Don't idle-close
       // while we retry; the server restores context on the new session.
+      _nemoSpeakingBeforeReconnect = nemoSpeaking;
       _gen++;
       _idleTimer?.cancel();
       _unmuteTimer?.cancel();
       _add('… reconnecting');
     } else if (signal == 'reconnected') {
-      // Fresh session is up — clear half-duplex state on BOTH sides so the mic
-      // is live (the service reset _muted; mirror nemoSpeaking here).
-      nemoSpeaking = false;
+      // Only unmute if Nemo wasn't mid-speech before the reconnect. If he was,
+      // `agent_audio_start` on the new session will handle muting correctly.
+      // Resetting nemoSpeaking=false unconditionally causes echo barge-in when
+      // agent_audio_start arrives before this reconnected signal (FLOW-04).
+      final wasSpeak = _nemoSpeakingBeforeReconnect;
+      _nemoSpeakingBeforeReconnect = false; // consume — must clear before any return
+      if (!wasSpeak) {
+        nemoSpeaking = false;
+        _voice.setMuted(false);
+      }
       _estPlaybackEndMs = 0;
-      _voice.setMuted(false);
       _player.flush();
       _resetIdle();
       _add('✓ reconnected');
@@ -178,7 +205,9 @@ class VoiceSessionController extends ChangeNotifier {
       // The voice service gave up after exhausting reconnects. It already tore
       // down its own mic/socket; we must hand the mic back to "hey nemo" or the
       // wake word stays dead until the app restarts.
-      _onSessionEnded();
+      unawaited(_onSessionEnded().catchError((Object e) {
+        debugPrint('VoiceSessionController: _onSessionEnded error: $e');
+      }));
     } else if (signal == 'recording_started') {
       _add('🔴 recording the meeting…');
     } else if (signal == 'recording_stopped') {
@@ -191,7 +220,9 @@ class VoiceSessionController extends ChangeNotifier {
       // re-arms the on-device wake word — nothing is streamed until "hey nemo".
       _add('💤 deactivated — say "hey nemo" to wake me');
       idleClosed = true;
-      stop();
+      unawaited(stop().catchError((Object e) {
+        debugPrint('VoiceSessionController: deactivate stop() error: $e');
+      }));
     }
     notifyListeners();
   }
@@ -203,12 +234,17 @@ class VoiceSessionController extends ChangeNotifier {
     final cmd = (data['command'] as String? ?? '').trim();
     if (id.isEmpty || cmd.isEmpty) return;
     _add('⚙ $cmd');
-    final r = await _executor.execute(
-      cmd,
-      context: _navigatorKey?.currentContext,
-    );
-    _voice.sendActionResult(
-        id, ok: r.ok, text: r.text, error: r.error, imageB64: r.imageB64);
+    try {
+      final r = await _executor.execute(
+        cmd,
+        context: _navigatorKey?.currentContext,
+      );
+      _voice.sendActionResult(
+          id, ok: r.ok, text: r.text, error: r.error, imageB64: r.imageB64);
+    } catch (e) {
+      debugPrint('[voice_action] error for $cmd: $e');
+      _voice.sendActionResult(id, ok: false, error: e.toString());
+    }
   }
 
   Future<bool> start() async {
@@ -242,16 +278,22 @@ class VoiceSessionController extends ChangeNotifier {
   }
 
   Future<void> stop() async {
-    _gen++; // invalidate any pending unmute timer
-    _unmuteTimer?.cancel();
-    _idleTimer?.cancel();
-    nemoSpeaking = false;
-    _estPlaybackEndMs = 0;
-    await _voice.stop();
-    await _player.stop();
-    // Hand the mic back to "hey nemo" (no-op if disabled in Settings).
-    await _wake.start();
-    notifyListeners();
+    if (_busy) return;
+    _busy = true;
+    try {
+      _gen++; // invalidate any pending unmute timer
+      _unmuteTimer?.cancel();
+      _idleTimer?.cancel();
+      nemoSpeaking = false;
+      _estPlaybackEndMs = 0;
+      await _voice.stop();
+      await _player.stop();
+      // Hand the mic back to "hey nemo" (no-op if disabled in Settings).
+      await _wake.start();
+      notifyListeners();
+    } finally {
+      _busy = false;
+    }
   }
 
   Future<void> toggle() async => isActive ? stop() : start();
@@ -274,14 +316,28 @@ class VoiceSessionController extends ChangeNotifier {
   void _resetIdle() {
     _idleTimer?.cancel();
     if (!_voice.isActive) return;
+    if (VisionMode.isOpen) return; // don't idle-close while camera is in use (F-04)
     _idleTimer = Timer(idleTimeout, _idleClose);
   }
 
   Future<void> _idleClose() async {
+    // Don't close the session while the user is actively using the camera.
+    // Re-arm the timer so we close once they're done (F-04/vision+voice).
+    if (VisionMode.isOpen) {
+      _resetIdle();
+      return;
+    }
+    // start() / toggle() hold _busy across the socket connect (up to 8s).
+    // Rather than no-op silently (leaking a live Deepgram session with no timer),
+    // retry in 2s — short enough to fire promptly once start() completes.
+    if (_busy) {
+      _idleTimer = Timer(const Duration(seconds: 2), _idleClose);
+      return;
+    }
     _add('⏸ no speech ${idleTimeout.inSeconds}s → paused (saves Deepgram cost)');
-    await stop();
     idleClosed = true;
     notifyListeners();
+    await stop();
   }
 
   void _add(String s) {
@@ -294,6 +350,7 @@ class VoiceSessionController extends ChangeNotifier {
   void dispose() {
     _unmuteTimer?.cancel();
     _idleTimer?.cancel();
+    _underrunSub?.cancel();
     _voice.dispose();
     super.dispose();
   }

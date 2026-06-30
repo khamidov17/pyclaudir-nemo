@@ -18,7 +18,13 @@ from pydantic import BaseModel, Field
 
 from .base import BaseTool, ToolResult
 
-_DATA_DIR = Path(os.environ.get("PYCLAUDIR_DATA_DIR", "./data")).resolve()
+# Match the voice server's NEMO_VOICE_DATA_DIR so both sides write to the same DB.
+# Fallback chain: NEMO_VOICE_DATA_DIR → PYCLAUDIR_DATA_DIR → ./data
+_DATA_DIR = Path(
+    os.environ.get("NEMO_VOICE_DATA_DIR")
+    or os.environ.get("PYCLAUDIR_DATA_DIR")
+    or "./data"
+).resolve()
 _INDEX_DB = _DATA_DIR / "memory_index.db"
 _DDL = (
     "CREATE TABLE IF NOT EXISTS chunks "
@@ -59,6 +65,7 @@ class WriteVoiceProfileTool(BaseTool):
         try:
             con = sqlite3.connect(str(_INDEX_DB), timeout=5.0)
             con.execute("PRAGMA journal_mode=WAL")
+            con.execute("PRAGMA busy_timeout=5000")
             con.execute(_DDL)
             con.execute(
                 "INSERT OR REPLACE INTO chunks "

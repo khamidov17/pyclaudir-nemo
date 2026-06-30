@@ -41,10 +41,15 @@ def _sign(body: bytes) -> str:
     return hmac.new(_INTERNAL_TOKEN.encode(), body, hashlib.sha256).hexdigest()
 
 
-async def post_proactive(text: str) -> None:
-    """POST a spoken reminder text to the voice server's active session. Never raises."""
+async def post_proactive(text: str) -> bool:
+    """POST a spoken reminder text to the voice server's active session.
+
+    Returns True if the voice server accepted it (202 — injected into active
+    session). Returns False if no session is active (404) or on error.
+    Never raises.
+    """
     if not _INTERNAL_TOKEN:
-        return
+        return False
     body = json.dumps({"text": text}).encode("utf-8")
     sig = _sign(body)
     headers = {"Content-Type": "application/json", "X-Internal-Sig": sig}
@@ -53,12 +58,15 @@ async def post_proactive(text: str) -> None:
         async with session.post(
             _PROACTIVE_ENDPOINT, data=body, headers=headers
         ) as resp:
+            if resp.status == 202:
+                return True
             if resp.status == 404:
                 LOG.debug("voice_bridge: no active voice session for proactive")
-            elif resp.status != 202:
+            else:
                 LOG.warning("voice_bridge: proactive status %d", resp.status)
     except Exception as exc:  # noqa: BLE001
         LOG.debug("voice_bridge: proactive error: %s", exc)
+    return False
 
 
 async def post_chunk(session_id: str, chunk: str, final: bool, rev: int) -> None:

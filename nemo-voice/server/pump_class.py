@@ -16,6 +16,7 @@ from qwen_link import QwenLink
 from voice_metrics import METRICS, record_ttfsw_ms
 
 from pump_tools import (
+    _PHONE_ACTION_TOOL_NAMES,
     _SessionCtx,
     _handle_tool,
     _run_bg_tool,
@@ -29,6 +30,7 @@ class _QwenPump:
     """Qwen → App: translate Qwen realtime events into our app protocol."""
 
     _TURN_IDLE_SEC = 6.0
+    _ACTION_TURN_IDLE_SEC = 25.0  # phone actions take up to 20s (action_bridge timeout)
 
     def __init__(self, link: QwenLink, ctx: _SessionCtx, orchestrator=None) -> None:
         self.link = link
@@ -172,14 +174,16 @@ class _QwenPump:
         tier = getattr(getattr(self._orchestrator, "snapshot", None), "route", "tier0")
         record_ttfsw_ms(sid, latency_ms, tier, "voice")
 
-    def _arm_turn_timer(self) -> None:
+    def _arm_turn_timer(self, idle_sec: float | None = None) -> None:
         if self._turn_timer:
             self._turn_timer.cancel()
-        self._turn_timer = asyncio.create_task(self._turn_timeout())
+        self._turn_timer = asyncio.create_task(
+            self._turn_timeout(idle_sec or self._TURN_IDLE_SEC)
+        )
 
-    async def _turn_timeout(self) -> None:
+    async def _turn_timeout(self, idle_sec: float) -> None:
         try:
-            await asyncio.sleep(self._TURN_IDLE_SEC)
+            await asyncio.sleep(idle_sec)
         except asyncio.CancelledError:
             return
         self._turn_timer = None
@@ -209,11 +213,14 @@ class _QwenPump:
         self._run_recoveries()
 
     def _run_recoveries(self) -> None:
+        orch = self._orchestrator
         if self._pending_code_intent:
             task, self._pending_code_intent = self._pending_code_intent, None
             LOG.info("recovering missed code delegation")
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
+                lambda _t=task, _o=orch: voice_intent.recover_delegate(
+                    self.link, self.bridge, _t, _o
+                )
             )
         if self._pending_search:
             query, self._pending_search = self._pending_search, None
@@ -239,7 +246,9 @@ class _QwenPump:
             task, self._pending_recall = self._pending_recall, None
             LOG.info("recovering recording recall → engine: %r", task)
             self.link.spawn_bg(
-                lambda: voice_intent.recover_delegate(self.link, self.bridge, task)
+                lambda _t=task, _o=orch: voice_intent.recover_delegate(
+                    self.link, self.bridge, _t, _o
+                )
             )
 
     async def _barge_in(self) -> None:
@@ -276,7 +285,10 @@ class _QwenPump:
                 except json.JSONDecodeError:
                     args = {}
                 await self._orchestrator.on_tool_call(name or "", args)
-            await _handle_tool(self.link, self.bridge, item)
+            # FLOW-01: phone actions take up to 20s — extend watchdog past action_bridge timeout.
+            if name and name in _PHONE_ACTION_TOOL_NAMES:
+                self._arm_turn_timer(idle_sec=self._ACTION_TURN_IDLE_SEC)
+            await _handle_tool(self.link, self.bridge, item, self._orchestrator)
 
     async def _done(self, ev: dict) -> None:
         await self._complete_turn()

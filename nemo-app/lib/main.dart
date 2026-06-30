@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -16,7 +17,10 @@ import 'services/voice_session_controller.dart';
 import 'services/wake_word_service.dart';
 
 const _storage = FlutterSecureStorage(
-  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  aOptions: AndroidOptions(
+    encryptedSharedPreferences: true,
+    keyCipherAlgorithm: KeyCipherAlgorithm.RSA_ECB_OAEPwithSHA_256andMGF1Padding,
+  ),
 );
 
 /// Global navigator: lets background services (voice actions, biometric
@@ -38,7 +42,6 @@ Future<void> main() async {
   // no matter which screen is open — or none — so the player is wired here,
   // once, instead of inside the chat screens.
   final voice = VoiceService();
-  nemo.audioB64.listen((b64) => voice.playAudio(b64));
   if (isPaired) {
     nemo.configure(serverUrl, appToken);
     // Connect at launch so a scheduled reminder can reach (and speak on) the
@@ -65,21 +68,44 @@ Future<void> main() async {
     executor: executor,
     navigatorKey: navigatorKey,
   );
-  wake.onWakeWord = () => voiceSession.start();
+  wake.onWakeWord = () {
+    if (!voiceSession.isActive) voiceSession.start();
+  };
+
+  // Proactive TTS (reminders, briefings): skip when a voice session is live
+  // to avoid fighting the VoiceChatService for the audio focus / speaker.
+  nemo.audioB64.listen(
+    (b64) async {
+      if (voiceSession.isActive) return;
+      await voice.playAudio(b64);
+    },
+    onError: (Object e) => debugPrint('audio stream error: $e'),
+  );
+
+  final updater = UpdateService();
+
+  // Wire voice-active flag into UpdateService so OTA install is blocked during
+  // a live voice session (prevents mic/audio disruption from installer reboot).
+  voiceSession.addListener(() {
+    updater.setVoiceActive(voiceSession.isActive);
+  });
 
   // Keep Nemo alive in the background whenever paired — so scheduled reminders
   // and briefings can be spoken on time even with the phone pocketed (and so
   // wake word, when enabled, survives the screen turning off).
   if (isPaired) {
     final wakeOn = await WakeWordService.isEnabled();
-    await BackgroundWakeWordService.start(
-      statusText: wakeOn
-          ? 'Listening for "Hey Nemo"…'
-          : 'Active — ready for voice and reminders',
-    );
+    try {
+      await BackgroundWakeWordService.start(
+        statusText: wakeOn
+            ? 'Listening for "Hey Nemo"…'
+            : 'Active — ready for voice and reminders',
+      );
+    } catch (e) {
+      debugPrint('BackgroundWakeWordService.start failed: $e');
+    }
   }
 
-  final updater = UpdateService();
   if (isPaired) {
     Future.delayed(const Duration(seconds: 5), () {
       updater.checkForUpdate(serverUrl);
@@ -102,9 +128,36 @@ Future<void> main() async {
   );
 }
 
-class NemoApp extends StatelessWidget {
+class NemoApp extends StatefulWidget {
   final bool isPaired;
   const NemoApp({super.key, required this.isPaired});
+  @override
+  State<NemoApp> createState() => _NemoAppState();
+}
+
+class _NemoAppState extends State<NemoApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final nemo = context.read<NemoService>();
+    if (state == AppLifecycleState.resumed && widget.isPaired) {
+      if (!nemo.isConnected) nemo.connect();
+    } else if (state == AppLifecycleState.paused) {
+      // Keep socket alive for background reminders; do not disconnect.
+      // The foreground service keeps the process alive.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -113,7 +166,7 @@ class NemoApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
       theme: buildNemoTheme(),
-      home: isPaired ? const ChatListScreen() : const PairingScreen(),
+      home: widget.isPaired ? const ChatListScreen() : const PairingScreen(),
     );
   }
 }

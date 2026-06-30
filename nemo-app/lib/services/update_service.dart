@@ -37,12 +37,17 @@ class UpdateService extends ChangeNotifier {
       final token = await _storage.read(key: 'app_token') ?? '';
       final httpUrl = _toHttp(serverBaseUrl);
       final client = IOClient(await SecureNet.httpClient());
-      final res = await client
-          .get(
-            Uri.parse('$httpUrl/apk/version'),
-            headers: {'Authorization': 'Bearer $token'},
-          )
-          .timeout(const Duration(seconds: 8));
+      final http.Response res;
+      try {
+        res = await client
+            .get(
+              Uri.parse('$httpUrl/apk/version'),
+              headers: {'Authorization': 'Bearer $token'},
+            )
+            .timeout(const Duration(seconds: 8));
+      } finally {
+        client.close();
+      }
       if (res.statusCode != 200) return;
 
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -59,11 +64,21 @@ class UpdateService extends ChangeNotifier {
     }
   }
 
+  /// Whether it is safe to install right now (no active voice session).
+  bool get canInstall => !_voiceActive;
+  bool _voiceActive = false;
+  void setVoiceActive(bool active) {
+    _voiceActive = active;
+  }
+
   /// Download → verify SHA-256 → hand the VERIFIED file to the installer.
   /// Throws [UpdateException] on any failure so the UI can offer the
   /// browser fallback explicitly.
   Future<void> downloadAndInstall(String serverBaseUrl) async {
     if (_downloading) return;
+    if (_voiceActive) {
+      throw UpdateException('cannot install during an active voice session');
+    }
     if (_serverSha256.isEmpty) {
       await checkForUpdate(serverBaseUrl);
       if (_serverSha256.isEmpty) {
@@ -75,10 +90,17 @@ class UpdateService extends ChangeNotifier {
     notifyListeners();
     try {
       final file = await _download(serverBaseUrl);
-      final ok = await _intents.invokeMethod<bool>(
-            'installApk', {'path': file.path},
-          ) ??
-          false;
+      // Re-check: a voice session may have started during the download (up to 30s).
+      if (_voiceActive) {
+        file.delete().catchError((_) {});
+        throw UpdateException('voice session started during download — retry after call');
+      }
+      bool ok = false;
+      try {
+        ok = await _intents.invokeMethod<bool>('installApk', {'path': file.path}) ?? false;
+      } finally {
+        file.delete().catchError((_) {});
+      }
       if (!ok) throw UpdateException('installer could not be launched');
       _updateAvailable = false;
     } finally {
@@ -93,8 +115,15 @@ class UpdateService extends ChangeNotifier {
     final req = http.Request('GET', Uri.parse(url))
       ..headers['Authorization'] = 'Bearer $token';
     final client = IOClient(await SecureNet.httpClient());
-    final res = await client.send(req).timeout(const Duration(seconds: 30));
+    final http.StreamedResponse res;
+    try {
+      res = await client.send(req).timeout(const Duration(seconds: 30));
+    } catch (e) {
+      client.close();
+      throw UpdateException('download failed: $e');
+    }
     if (res.statusCode != 200) {
+      client.close();
       throw UpdateException('download failed (HTTP ${res.statusCode})');
     }
 
@@ -113,14 +142,21 @@ class UpdateService extends ChangeNotifier {
         received += chunk.length;
         if (total > 0) _setProgress(received / total);
       }
-    } finally {
-      await sink.close();
+    } catch (e) {
+      await sink.close().catchError((_) {});
+      client.close();
+      await file.delete().catchError((_) {});
+      throw UpdateException('download failed: $e');
     }
+    await sink.close();
+    client.close();
     hasher.close();
 
     final actual = digestSink.digest.toString().toLowerCase();
-    if (actual != _serverSha256) {
+    if (!_constantTimeEqual(actual, _serverSha256)) {
       await file.delete();
+      _updateAvailable = false;
+      _serverSha256 = ''; // force re-fetch on next attempt — stale hash would loop
       throw UpdateException(
           'APK hash mismatch — refused to install (possible tampering)');
     }
@@ -147,12 +183,16 @@ class UpdateService extends ChangeNotifier {
     String? dlToken;
     try {
       final client = IOClient(await SecureNet.httpClient());
-      final res = await client.get(
-        Uri.parse('$base/apk/dltoken'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        dlToken = jsonDecode(res.body)['token'] as String?;
+      try {
+        final res = await client.get(
+          Uri.parse('$base/apk/dltoken'),
+          headers: {'Authorization': 'Bearer $token'},
+        ).timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200) {
+          dlToken = jsonDecode(res.body)['token'] as String?;
+        }
+      } finally {
+        client.close();
       }
     } catch (e) {
       debugPrint('dltoken fetch failed: $e');
@@ -162,7 +202,8 @@ class UpdateService extends ChangeNotifier {
           'Could not get a download link — use the in-app update instead.');
     }
     await _intents.invokeMethod('openUrl', {'url': '$base/apk/download?token=$dlToken'});
-    _updateAvailable = false;
+    // Keep _updateAvailable=true — browser fallback doesn't confirm install success.
+    // The banner clears when the new build starts (checkForUpdate comparison).
     notifyListeners();
   }
 
@@ -170,7 +211,10 @@ class UpdateService extends ChangeNotifier {
   Future<int> _getInstalledVersion() async {
     try {
       final info = await PackageInfo.fromPlatform();
-      return int.tryParse(info.buildNumber) ?? 0;
+      final v = int.tryParse(info.buildNumber.trim());
+      // Non-numeric buildNumber (empty / "SNAPSHOT" / debug) → treat as
+      // "very new" so a dev build never triggers a spurious update banner.
+      return v ?? 999999;
     } catch (_) {
       return 0;
     }
@@ -179,6 +223,17 @@ class UpdateService extends ChangeNotifier {
   static String _toHttp(String wsUrl) => wsUrl
       .replaceFirst('wss://', 'https://')
       .replaceFirst('ws://', 'http://');
+}
+
+/// Constant-time string comparison to prevent timing-oracle attacks on
+/// SHA-256 hash verification (BUG-012: early-exit == leaks match length).
+bool _constantTimeEqual(String a, String b) {
+  if (a.length != b.length) return false;
+  int diff = 0;
+  for (int i = 0; i < a.length; i++) {
+    diff |= a.codeUnitAt(i) ^ b.codeUnitAt(i);
+  }
+  return diff == 0;
 }
 
 class UpdateException implements Exception {

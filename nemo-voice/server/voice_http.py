@@ -7,6 +7,7 @@ registry and Orchestrator are imported lazily to avoid circular imports.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,11 +21,20 @@ from pathlib import Path
 
 from aiohttp import web
 
+from error_journal import log_warn
 from voice_metrics import METRICS
+
+# Strong references to fire-and-forget tasks so the GC can't collect them mid-flight.
+_bg_tasks: set[asyncio.Task] = set()
 
 LOG = logging.getLogger("nemo.voice_http")
 
 _INTERNAL_TOKEN = os.environ.get("VOICE_INTERNAL_TOKEN", "").strip()
+if not _INTERNAL_TOKEN:
+    LOG.warning(
+        "VOICE_INTERNAL_TOKEN is not set — /internal/* endpoints will always return 401."
+        " Proactive reminders and brain-result weave-in are disabled."
+    )
 
 # UUID4 format guard for session_id from untrusted callers.
 _UUID4_RE = re.compile(
@@ -32,6 +42,12 @@ _UUID4_RE = re.compile(
 )
 # XML-tag-like injection patterns stripped from chunk text.
 _TAG_RE = re.compile(r"<[^>]{0,80}>")
+# Bidi overrides + zero-width/invisible chars used to hide injection markers.
+_BIDI_RE = re.compile(
+    r"[­؜​-‍‎‏‪-‮⁠⁦-⁩﻿]"
+)
+# LLM chat-template markers. Applied in a loop so nested forms collapse fully.
+_INJECT_RE = re.compile(r"\[/?INST\]|</s>|<s>|\[/?SYS\]", re.IGNORECASE)
 # Per-session rate limit: max 60 POSTs/min to /internal/brain_result.
 _RATE: dict[str, list[float]] = defaultdict(list)
 _RATE_MAX = 60
@@ -47,14 +63,30 @@ def _verify_internal(raw_body: bytes, sig: str) -> bool:
 
 
 def _sanitize_chunk(text: str) -> str:
-    """Strip XML-like tags and cap length. Raises ValueError on invalid UTF-8."""
+    """Strip XML-like tags, bidi overrides, and LLM injection markers; cap length."""
     text.encode("utf-8")  # raises UnicodeEncodeError if invalid
     text = _TAG_RE.sub("", text)
+    text = _BIDI_RE.sub("", text)
+    while True:
+        cleaned = _INJECT_RE.sub("", text)
+        if cleaned == text:
+            break
+        text = cleaned
     return text[:2000]
+
+
+_RATE_MAX_SESSIONS = 10_000
 
 
 def _rate_ok(session_id: str) -> bool:
     now = time.monotonic()
+    # Evict the least-recently-used entry when the table is full.
+    # Insertion-order eviction (next(iter())) would evict the oldest-inserted
+    # entry first — which is the legitimate long-lived session, not the attacker's
+    # junk. LRU evicts whichever session hasn't been seen most recently instead.
+    if len(_RATE) >= _RATE_MAX_SESSIONS and session_id not in _RATE:
+        lru_key = min(_RATE, key=lambda k: _RATE[k][-1] if _RATE[k] else 0)
+        del _RATE[lru_key]
     bucket = _RATE[session_id]
     _RATE[session_id] = [t for t in bucket if now - t < _RATE_WINDOW]
     if len(_RATE[session_id]) >= _RATE_MAX:
@@ -94,10 +126,11 @@ async def handle_brain_result(request: web.Request) -> web.Response:
 
     orch = session_registry.get(session_id)
     if orch is None:
+        log_warn("voice_http/brain_result", f"session not found for chunk delivery (sid={session_id[:8]}…)")
         return web.Response(status=404)
-    import asyncio
-
-    asyncio.create_task(orch.on_background_chunk(chunk, final, rev))
+    t = asyncio.create_task(orch.on_background_chunk(chunk, final, rev))
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
     return web.Response(status=202)
 
 
@@ -152,18 +185,25 @@ async def handle_proactive(request: web.Request) -> web.Response:
         payload = json.loads(raw)
     except json.JSONDecodeError:
         return web.Response(status=400)
-    text = str(payload.get("text", "")).strip()
+    raw_text = str(payload.get("text", "")).strip()
+    if not raw_text:
+        return web.Response(status=400)
+    try:
+        text = _sanitize_chunk(raw_text)
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return web.Response(status=400)
     if not text:
         return web.Response(status=400)
     import session_registry
 
     orch = session_registry.any_active()
     if orch is None:
+        log_warn("voice_http/proactive", "proactive reminder arrived but no active voice session — not spoken")
         return web.Response(status=404)
-    import asyncio
-
     chunk = f"[proactive reminder — speak this naturally, do not read verbatim:] {text}"
-    asyncio.create_task(orch.on_background_chunk(chunk, True, 0))  # type: ignore[attr-defined]
+    t = asyncio.create_task(orch.on_background_chunk(chunk, True, 0))  # type: ignore[attr-defined]
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
     return web.Response(status=202)
 
 

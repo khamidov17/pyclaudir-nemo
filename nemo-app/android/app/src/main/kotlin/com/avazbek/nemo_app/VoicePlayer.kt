@@ -10,13 +10,14 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Continuous PCM16 playback of Nemo's voice on the MEDIA path.
+ * Continuous PCM16 playback of Nemo's voice on the ASSISTANT path.
  *
- * We play through USAGE_MEDIA (not the voice-call path) so the audio is
- * full-bandwidth, loud and clear instead of the muffled/quiet "phone call"
- * sound. The cost is that the capture-side hardware AEC may not perfectly
- * cancel speaker bleed on every device; false barge-in is handled on the
- * Dart side with a short debounce at the start of each reply.
+ * We play through USAGE_ASSISTANT (not USAGE_MEDIA) so the system identifies
+ * this stream as the assistant's voice and mixes it correctly over ducked
+ * music. Full-bandwidth loudspeaker route — same quality as MEDIA, louder
+ * than the muffled phone-call path. The cost is that hardware AEC may not
+ * perfectly cancel speaker bleed on every device; false barge-in is handled
+ * on the Dart side with a short debounce at the start of each reply.
  *
  * Audio streams chunk-by-chunk as it arrives. A generous ~1.5s jitter buffer
  * absorbs network bursts so playback is smooth; mid-reply chunks are never
@@ -71,7 +72,9 @@ class VoicePlayer(private val context: Context) {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .setBufferSizeInBytes(bufBytes)
             .build()
-        t.play()
+        // Start PAUSED — play() called on first chunk so underruns don't fire
+        // before any audio has been queued (B-17).
+        t.pause()
         track = t
 
         running = true
@@ -112,6 +115,11 @@ class VoicePlayer(private val context: Context) {
         }
         queue.offerLast(bytes)
         queuedBytes.addAndGet(bytes.size)
+        // First chunk: transition from PAUSED → PLAYING (B-17 — no underrun before data arrives).
+        val t = track ?: return
+        if (t.playState == AudioTrack.PLAYSTATE_PAUSED) {
+            try { t.play() } catch (_: Exception) {}
+        }
     }
 
     /** Barge-in: drop everything queued and clear the track immediately. */
@@ -133,9 +141,9 @@ class VoicePlayer(private val context: Context) {
         queuedBytes.set(0)
         val t = track
         track = null
-        try {
-            t?.pause(); t?.flush(); t?.stop(); t?.release()
-        } catch (e: Exception) {
-        }
+        try { t?.pause() } catch (_: Exception) {}
+        try { t?.flush() } catch (_: Exception) {}
+        try { t?.stop() } catch (_: Exception) {}
+        try { t?.release() } catch (_: Exception) {}
     }
 }

@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import 'secure_net.dart';
 
@@ -47,6 +48,7 @@ class VoiceChatService extends ChangeNotifier {
   StreamSubscription? _wsSub;
   bool _active = false;
   bool get isActive => _active;
+  bool _disposed = false;
 
   // Reconnection: on a transient WS drop (flaky network) we re-open the socket
   // and re-auth WITHOUT tearing down the mic/player — the server restores the
@@ -89,7 +91,7 @@ class VoiceChatService extends ChangeNotifier {
     _muted = m;
     _muteWatchdog?.cancel();
     if (m) {
-      _muteWatchdog = Timer(const Duration(seconds: 15), () => _muted = false);
+      _muteWatchdog = Timer(const Duration(seconds: 31), () => _muted = false);
     }
   }
 
@@ -121,7 +123,14 @@ class VoiceChatService extends ChangeNotifier {
   void sendActionResult(String id,
       {bool ok = true, String? text, String? error, String? imageB64}) {
     final ws = _ws;
-    if (ws == null) return;
+    if (ws == null) {
+      // Session ended while action was running — log result so user sees outcome.
+      if (!_disposed && !_transcripts.isClosed) {
+        final summary = ok ? (text ?? 'done') : (error ?? 'failed');
+        _transcripts.add('Nemo: [$id offline result: $summary]');
+      }
+      return;
+    }
     ws.sink.add(jsonEncode({
       'type': 'action_result',
       'id': id,
@@ -166,7 +175,7 @@ class VoiceChatService extends ChangeNotifier {
     }
 
     if (!await _openSocket(_voiceUri(serverHost))) {
-      _errors.add('Voice server is not reachable. Check nemo-voice service.');
+      if (!_disposed) _errors.add('Voice server is not reachable. Check nemo-voice service.');
       await stop();
       return false;
     }
@@ -175,7 +184,7 @@ class VoiceChatService extends ChangeNotifier {
     _recorder = AudioRecorder();
     final hasPerms = await _recorder!.hasPermission();
     if (!hasPerms) {
-      _errors.add('Microphone permission is required for voice chat.');
+      if (!_disposed) _errors.add('Microphone permission is required for voice chat.');
       await stop();
       return false;
     }
@@ -202,7 +211,7 @@ class VoiceChatService extends ChangeNotifier {
         ),
       ));
     } catch (e) {
-      _errors.add('Could not start microphone stream.');
+      if (!_disposed) _errors.add('Could not start microphone stream.');
       await stop();
       return false;
     }
@@ -221,18 +230,26 @@ class VoiceChatService extends ChangeNotifier {
       }
     }
 
-    _recorderSub = stream.listen((chunk) {
-      // Meeting recorder tee: capture the full room audio continuously,
-      // independent of the half-duplex mute used for the live turn-taking.
-      if (_recSink != null && chunk.isNotEmpty) {
-        _recSink!.add(chunk);
-        _recBytes += chunk.length;
-      }
-      if (_ws != null && chunk.isNotEmpty && !_muted) {
-        final b64 = base64Encode(chunk);
-        _ws!.sink.add(jsonEncode({'type': 'audio', 'data': b64}));
-      }
-    });
+    _recorderSub = stream.listen(
+      (chunk) {
+        // Meeting recorder tee: capture the full room audio continuously,
+        // independent of the half-duplex mute used for the live turn-taking.
+        if (_recSink != null && chunk.isNotEmpty) {
+          _recSink!.add(chunk);
+          _recBytes += chunk.length;
+        }
+        if (_ws != null && chunk.isNotEmpty && !_muted) {
+          final b64 = base64Encode(chunk);
+          _ws!.sink.add(jsonEncode({'type': 'audio', 'data': b64}));
+        }
+      },
+      onError: (Object e) {
+        debugPrint('VoiceChatService: recorder stream error: $e');
+        if (!_disposed && !_errors.isClosed) _errors.add('Microphone stream failed — voice session ended.');
+        stop();
+      },
+      onDone: () => debugPrint('VoiceChatService: recorder stream closed'),
+    );
 
     debugPrint('VoiceChatService: started → $serverHost');
     return true;
@@ -281,16 +298,25 @@ class VoiceChatService extends ChangeNotifier {
     _wsSub = ch.stream.listen(
       _onMessage,
       onError: (_) => _onDrop(),
-      onDone: _onDrop,
+      onDone: () => _onDrop(closeCode: ch.closeCode),
     );
     return true;
   }
 
   /// WS dropped. If the user didn't stop, retry with backoff instead of ending
   /// the session — the conversation resumes on the new server session.
-  void _onDrop() {
+  /// Close code 4001 = auth rejected — stop retrying and prompt re-pairing.
+  void _onDrop({int? closeCode}) {
     if (_userStopping || !_active) return;
     _ws = null;
+    if (closeCode == 4001) {
+      if (!_disposed && !_errors.isClosed) {
+        _errors.add('Authentication failed — re-pair in Settings.');
+      }
+      if (!_disposed && !_controls.isClosed) _controls.add('ended');
+      unawaited(stop()); // _onDrop is sync; fire-and-forget teardown
+      return;
+    }
     _scheduleReconnect();
   }
 
@@ -300,14 +326,12 @@ class VoiceChatService extends ChangeNotifier {
     if (_userStopping || !_active) return;
     if (_reconnecting || (_reconnectTimer?.isActive ?? false)) return;
     if (_reconnectAttempts >= _maxReconnects) {
-      _errors.add('Voice connection lost — say "hey nemo" to start again.');
-      // Tell the controller the session died on its own so it re-arms the wake
-      // word (its stop()/idle path is the only thing that hands the mic back).
-      _controls.add('ended');
+      if (!_disposed) _errors.add('Voice connection lost — say "hey nemo" to start again.');
+      if (!_disposed) _controls.add('ended');
       stop();
       return;
     }
-    _controls.add('reconnecting');
+    if (!_disposed) _controls.add('reconnecting');
     final delayMs = (500 * (1 << _reconnectAttempts)).clamp(500, 8000);
     _reconnectAttempts++;
     _reconnectTimer = Timer(Duration(milliseconds: delayMs), _reconnect);
@@ -327,13 +351,21 @@ class VoiceChatService extends ChangeNotifier {
       _reconnectAttempts = 0;
       _muted = false;
       _muteWatchdog?.cancel();
-      _controls.add('reconnected');
+      // Treat reconnect as a session boundary for meeting recordings:
+      // the new server session has no context for the ongoing recording (BUG-09).
+      if (_recSink != null) {
+        unawaited(_stopMeetingRecordingAndUpload().catchError(
+          (Object e) => debugPrint('VoiceChatService: upload on reconnect error: $e'),
+        ));
+      }
+      if (!_disposed) _controls.add('reconnected');
     } else {
       _scheduleReconnect();
     }
   }
 
   void _onMessage(dynamic raw) {
+    if (_disposed) return;
     try {
       final data = jsonDecode(raw as String) as Map<String, dynamic>;
       switch (data['type']) {
@@ -373,7 +405,7 @@ class VoiceChatService extends ChangeNotifier {
         case 'action':
           _actions.add(data);
         case 'error':
-          _errors.add(data['message'] as String? ?? 'Voice error');
+          if (!_disposed && !_errors.isClosed) _errors.add(data['message'] as String? ?? 'Voice error');
       }
     } catch (e) {
       debugPrint('VoiceChatService parse error: $e');
@@ -385,7 +417,7 @@ class VoiceChatService extends ChangeNotifier {
   Future<String> _deviceId() async {
     var id = await _storage.read(key: 'device_id');
     if (id == null || id.isEmpty) {
-      id = 'phone-${DateTime.now().millisecondsSinceEpoch}';
+      id = const Uuid().v4();
       await _storage.write(key: 'device_id', value: id);
     }
     return id;
@@ -414,7 +446,7 @@ class VoiceChatService extends ChangeNotifier {
       _recId = id;
       _recBytes = 0;
       _recStartMs = DateTime.now().millisecondsSinceEpoch;
-      _controls.add('recording_started');
+      if (!_disposed) _controls.add('recording_started');
       debugPrint('Meeting recording started: $_recPcmPath');
     } catch (e) {
       debugPrint('record_start failed: $e');
@@ -434,21 +466,35 @@ class VoiceChatService extends ChangeNotifier {
     _recPcmPath = null;
     _recId = null;
     if (sink == null || pcmPath == null || id == null) return;
-    _controls.add('recording_stopped');
+    if (!_disposed) _controls.add('recording_stopped');
     try {
       await sink.flush();
       await sink.close();
+      // Defensive OS-level flush: open+close the PCM file via RandomAccessFile
+      // to ensure all kernel buffers are visible before we open a second fd for reading.
+      final raf = await File(pcmPath).open(mode: FileMode.append);
+      await raf.flush();
+      await raf.close();
       // Wrap the raw PCM in a WAV container (streamed copy — no whole-file load).
       final wavPath = pcmPath.replaceFirst(RegExp(r'\.pcm$'), '.wav');
-      final wav = File(wavPath).openWrite();
-      wav.add(_wavHeader(bytes, _recSampleRate));
-      await wav.addStream(File(pcmPath).openRead());
-      await wav.flush();
-      await wav.close();
+      final dataLen = await File(pcmPath).length(); // actual size after flush
+      IOSink? wav;
+      try {
+        wav = File(wavPath).openWrite();
+        wav.add(_wavHeader(dataLen, _recSampleRate));
+        await wav.addStream(File(pcmPath).openRead());
+        await wav.flush();
+      } finally {
+        await wav?.close();
+      }
       try {
         await File(pcmPath).delete();
       } catch (_) {}
-      await _uploadRecording(wavPath, id, startMs);
+      try {
+        await _uploadRecording(wavPath, id, startMs);
+      } finally {
+        try { await File(wavPath).delete(); } catch (_) {}
+      }
     } catch (e) {
       debugPrint('record_stop/upload failed: $e');
     }
@@ -457,13 +503,17 @@ class VoiceChatService extends ChangeNotifier {
   Future<void> _uploadRecording(String wavPath, String id, int startMs) async {
     final serverUrl = (await _storage.read(key: 'server_url') ?? '').trim();
     final token = await _storage.read(key: 'app_token') ?? '';
-    if (serverUrl.isEmpty || token.isEmpty) return;
+    if (serverUrl.isEmpty || token.isEmpty) {
+      debugPrint('VoiceChatService: recording upload skipped — server not configured');
+      if (!_disposed) _errors.add('Recording not uploaded: server is not configured.');
+      return;
+    }
     // /recording/upload lives on the ENGINE (same base as updates), not the
     // voice port. The engine uses a pinned self-signed cert, so go through
     // SecureNet — a bare http client would fail TLS verification.
     final httpBase = serverUrl
         .replaceFirst('wss://', 'https://')
-        .replaceFirst('ws://', 'http://');
+        .replaceFirst('ws://', 'https://'); // always HTTPS — bearer token must not travel cleartext
     IOClient? client;
     try {
       client = IOClient(await SecureNet.httpClient());
@@ -471,20 +521,23 @@ class VoiceChatService extends ChangeNotifier {
         'POST',
         Uri.parse('$httpBase/recording/upload'),
       )
+        ..headers['Authorization'] = 'Bearer $token'
         ..fields['id'] = id
-        ..fields['token'] = token
         ..fields['started_ms'] = startMs.toString()
         ..fields['ended_ms'] = DateTime.now().millisecondsSinceEpoch.toString()
         ..files.add(await http.MultipartFile.fromPath('file', wavPath));
       final resp = await client.send(req).timeout(const Duration(minutes: 5));
       if (resp.statusCode == 200) {
-        _controls.add('recording_uploaded');
+        if (!_disposed) _controls.add('recording_uploaded');
         debugPrint('Meeting recording uploaded: $id');
       } else {
         debugPrint('recording upload failed: ${resp.statusCode}');
       }
     } catch (e) {
       debugPrint('recording upload error: $e');
+      if (!_disposed && !_errors.isClosed) {
+        _errors.add('Recording upload failed — transcript not saved. ($e)');
+      }
     } finally {
       client?.close();
     }
@@ -525,27 +578,31 @@ class VoiceChatService extends ChangeNotifier {
     _reconnecting = false;
     _reconnectTimer?.cancel();
     _reconnectAttempts = 0;
-    // Finalize an in-progress meeting recording before the mic tears down, so a
-    // session that ends mid-recording still uploads what was captured.
-    if (_recSink != null) {
-      await _stopMeetingRecordingAndUpload();
-    }
-    await _recorderSub?.cancel();
-    await _recorder?.stop();
-    _recorder?.dispose();
-    _recorder = null;
-    _recorderSub = null;
+    // Close the WebSocket immediately so the server stops sending audio frames
+    // and Nemo stops speaking — don't wait for the upload to finish first.
+    _wsSub?.cancel();
+    _ws?.sink.close(ws_status.goingAway);
+    _ws = null;
+    _muted = false;
+    _muteWatchdog?.cancel();
     // Restore normal audio routing (undo comm-mode/speakerphone). No-op when off.
     if (kFullDuplex) {
       try {
         await _audioFx.invokeMethod('disable');
       } catch (_) {}
     }
-    _wsSub?.cancel();
-    _ws?.sink.close(ws_status.goingAway);
-    _ws = null;
-    _muted = false;
-    _muteWatchdog?.cancel();
+    await _recorderSub?.cancel();
+    await _recorder?.stop();
+    _recorder?.dispose();
+    _recorder = null;
+    _recorderSub = null;
+    // Fire recording upload as a background task so stop() returns immediately.
+    // The upload may take up to 5 minutes; it runs while the UI shows idle state.
+    if (_recSink != null) {
+      unawaited(_stopMeetingRecordingAndUpload().catchError(
+        (Object e) => debugPrint('VoiceChatService: upload error: $e'),
+      ));
+    }
     try {
       await (await AudioSession.instance).setActive(false);
     } catch (_) {}
@@ -555,7 +612,8 @@ class VoiceChatService extends ChangeNotifier {
 
   @override
   void dispose() {
-    stop();
+    _disposed = true;
+    stop(); // fire-and-forget; all adds are guarded by _disposed
     _transcripts.close();
     _audioOut.close();
     _controls.close();

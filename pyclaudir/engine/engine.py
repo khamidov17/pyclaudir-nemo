@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from ..cc_failure_classifier import CcFailureClassification, classify_cc_failure
 from ..config import Config
 from ..db.messages import fetch_recent_messages
+from ..error_journal import log_error
 from ..models import ChatMessage
 from .format import format_messages_with_context
 
@@ -177,11 +178,6 @@ class Engine:
         #: Written by the /internal/kick handler when VOICE_STREAM_BRAIN=1; read
         #: and cleared by _fire_one_reminder to build the on_chunk coroutine.
         self._pending_voice_session_id: str = ""
-        #: The voice StateSnapshot.rev captured at delegate time. The engine
-        #: echoes this UNCHANGED on every streamed chunk so the orchestrator can
-        #: tell whether the topic moved on since it delegated (stale-drop). It is
-        #: NOT a per-chunk sequence number.
-        self._pending_voice_rev: int = 0
         self._lock = asyncio.Lock()
         self._is_processing = asyncio.Event()
         self._debounce_task: asyncio.Task[None] | None = None
@@ -879,6 +875,7 @@ class Engine:
         # rate-limited AND dropped_text, but we only notify once per turn.
         stderr_classification = classify_cc_failure(result.stderr_tail)
         if stderr_classification is not None:
+            log_error("engine/cc_failure", stderr_classification.user_message, result.stderr_tail or "")
             await self._notify_error_to_chats(stderr_classification.user_message)
 
         if result.dropped_text:

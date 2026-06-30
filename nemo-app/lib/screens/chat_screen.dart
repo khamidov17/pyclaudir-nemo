@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -12,11 +14,14 @@ import '../models/message.dart';
 import '../services/chat_storage.dart';
 import '../services/nemo_service.dart';
 import '../services/recording_service.dart';
+import '../services/voice_session_controller.dart';
 import '../theme.dart';
 import '../widgets/message_bubble.dart';
 import 'voice_chat_screen.dart';
 
 const _uuid = Uuid();
+
+String _encodeBytes(Uint8List bytes) => base64Encode(bytes);
 
 class ChatScreen extends StatefulWidget {
   final ChatSession session;
@@ -29,10 +34,12 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _ctrl = TextEditingController();
   final ScrollController _scroll = ScrollController();
   List<Message> _messages = [];
-  bool _thinking = false;
+  bool _hasAutoRenamed = false;
   late StreamSubscription _msgSub;
   late StreamSubscription _errorSub;
   late RecordingService _rec;
+  // Cached so dispose() can call removeListener without touching context.
+  late VoiceSessionController _voiceSession;
   final _imagePicker = ImagePicker();
 
   @override
@@ -41,11 +48,28 @@ class _ChatScreenState extends State<ChatScreen> {
     _rec = RecordingService();
     _loadMessages();
     final nemo = context.read<NemoService>();
+    // Subscribe first so no live messages are dropped, then drain the buffer.
+    // Snapshot + clear is synchronous (no async gap), preventing duplication with
+    // the live stream. Replay is deferred to post-frame so setState runs when mounted
+    // (FLOW-03/chat).
     _msgSub = nemo.messages.listen(_onNemoReply);
+    final buffered = List<String>.from(nemo.messageBuffer);
+    nemo.messageBuffer.clear();
+    if (buffered.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        for (final msg in buffered) {
+          _onNemoReply(msg);
+        }
+      });
+    }
+    // Block recording while a voice session is live (R-06).
+    _voiceSession = context.read<VoiceSessionController>();
+    _voiceSession.addListener(_syncVoiceActive);
+    _rec.setVoiceSessionActive(_voiceSession.isActive);
     // Audio (TTS) playback is wired app-globally in main.dart — not here.
     _errorSub = nemo.errors.listen((message) {
       if (!mounted) return;
-      setState(() => _thinking = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
@@ -54,13 +78,20 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _loadMessages() async {
     final msgs = await ChatStorage.getMessages(widget.session.id);
-    setState(() => _messages = msgs);
+    setState(() {
+      _messages = msgs;
+      if (msgs.isNotEmpty) _hasAutoRenamed = true; // session already has history
+    });
     _scrollDown();
   }
 
+  void _syncVoiceActive() {
+    _rec.setVoiceSessionActive(_voiceSession.isActive);
+  }
+
   void _onNemoReply(String text) {
+    if (!mounted) return;
     _addMessage(text, Sender.nemo);
-    setState(() => _thinking = false);
   }
 
   void _addMessage(
@@ -82,8 +113,9 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     setState(() => _messages.add(m));
     ChatStorage.saveMessage(m);
-    // Auto-rename chat from first user message
-    if (sender == Sender.user && _messages.length == 1 && text.isNotEmpty) {
+    // Auto-rename chat from first user message (flag avoids race with _loadMessages)
+    if (sender == Sender.user && !_hasAutoRenamed && text.isNotEmpty) {
+      _hasAutoRenamed = true;
       final title = text.length > 40 ? '${text.substring(0, 40)}…' : text;
       ChatStorage.saveSession(ChatSession(
         id: widget.session.id,
@@ -109,9 +141,7 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty) return;
     _ctrl.clear();
     _addMessage(text, Sender.user);
-    setState(() => _thinking = true);
-    final sent = await context.read<NemoService>().send(text);
-    if (!sent && mounted) setState(() => _thinking = false);
+    await context.read<NemoService>().send(text);
   }
 
   Future<void> _sendImage() async {
@@ -119,18 +149,14 @@ class _ChatScreenState extends State<ChatScreen> {
         source: ImageSource.gallery, imageQuality: 85);
     if (picked == null) return;
     final bytes = await picked.readAsBytes();
-    final b64 = base64Encode(bytes);
+    final b64 = await compute(_encodeBytes, bytes);
     // Save to local storage
     final dir = await getApplicationDocumentsDirectory();
     final dest = '${dir.path}/${_uuid.v4()}.jpg';
     await File(dest).writeAsBytes(bytes);
     _addMessage('', Sender.user, type: MessageType.image, mediaPath: dest);
-
-    // Ask Nemo about the image
-    setState(() => _thinking = true);
-    final sent = await context.read<NemoService>().sendWithMedia(
+    await context.read<NemoService>().sendWithMedia(
         '[Image attached — please describe and analyze it]', b64, 'image/jpeg');
-    if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _takePhoto() async {
@@ -138,16 +164,14 @@ class _ChatScreenState extends State<ChatScreen> {
         source: ImageSource.camera, imageQuality: 85);
     if (picked == null) return;
     final bytes = await picked.readAsBytes();
-    final b64 = base64Encode(bytes);
+    final b64 = await compute(_encodeBytes, bytes);
     final dir = await getApplicationDocumentsDirectory();
     final dest = '${dir.path}/${_uuid.v4()}.jpg';
     await File(dest).writeAsBytes(bytes);
     _addMessage('', Sender.user, type: MessageType.image, mediaPath: dest);
-    setState(() => _thinking = true);
-    final sent = await context
+    await context
         .read<NemoService>()
         .sendWithMedia('[Photo taken — please describe it]', b64, 'image/jpeg');
-    if (!sent && mounted) setState(() => _thinking = false);
   }
 
   Future<void> _sendFile() async {
@@ -157,21 +181,32 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _toggleRecording() async {
+    if (_voiceSession.isActive) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Stop the voice call first to record')),
+      );
+      return;
+    }
     if (_rec.isRecording) {
       final result = await _rec.stopAndTranscribe();
       if (result == null) return;
       final dur = result.duration.inSeconds;
-      final transcript =
-          result.transcript ?? '[No transcript — add Groq API key]';
-      final summary =
-          'Recorded ${dur}s conversation.\n\nTranscript:\n$transcript';
+      final transcript = result.transcript;
+      if (transcript == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No transcript — add Groq API key in Settings')),
+          );
+        }
+        return;
+      }
+      final summary = 'Recorded ${dur}s conversation.\n\nTranscript:\n$transcript';
       _addMessage(summary, Sender.user, type: MessageType.recording);
       // Save to Nemo memory automatically
-      setState(() => _thinking = true);
-      final sent = await context.read<NemoService>().send(
+      await context.read<NemoService>().send(
           'I just recorded a ${dur}s conversation. Please save this to memory '
           'and summarize what was discussed:\n\n$transcript');
-      if (!sent && mounted) setState(() => _thinking = false);
     } else {
       await _rec.startRecording();
       setState(() {});
@@ -233,7 +268,7 @@ class _ChatScreenState extends State<ChatScreen> {
           const SizedBox(width: 8),
           const Text('Nemo $nemoVersionLabel',
               style: TextStyle(fontWeight: FontWeight.w600)),
-          if (_thinking) ...[
+          if (nemo.state == NemoState.thinking) ...[
             const SizedBox(width: 8),
             const SizedBox(
                 width: 12,
@@ -332,6 +367,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _voiceSession.removeListener(_syncVoiceActive);
     _msgSub.cancel();
     _errorSub.cancel();
     _ctrl.dispose();

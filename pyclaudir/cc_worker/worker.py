@@ -331,6 +331,7 @@ class CcWorker:
         self._pending_model = model
         self._pending_model_deferred = False
         self._supervisor_abort_reason = "model-switch"
+        self._on_chunk = None
         asyncio.create_task(self._terminate_proc(), name="cc-model-switch")
 
     def defer_model_switch(self, model: str) -> None:
@@ -612,6 +613,7 @@ class CcWorker:
                 log.debug("on_stale_session callback failed", exc_info=True)
         self.spec = dataclasses.replace(self.spec, session_id=None)
         self._session_id = None
+        self._on_chunk = None
         await asyncio.sleep(self._crash_backoff_base)
         await self._terminate_proc()
         await self.start()
@@ -651,6 +653,7 @@ class CcWorker:
                 await self._on_crash(attempt, backoff)
             except Exception:
                 log.debug("on_crash callback failed", exc_info=True)
+        self._on_chunk = None
         await asyncio.sleep(backoff)
         await self._terminate_proc()
         await self.start()
@@ -845,6 +848,7 @@ class CcWorker:
         sentinel.stderr_tail = list(self._stderr_tail)
         self._result_queue.put_nowait(sentinel)
         self._current_turn = None
+        self._on_chunk = None  # don't fire a stale voice-session callback after restart
         self._tool_error_abort_task = asyncio.create_task(
             self._terminate_proc(),
             name="cc-tool-error-abort",

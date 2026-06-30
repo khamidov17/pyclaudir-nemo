@@ -42,7 +42,9 @@ class PhoneCommandExecutor {
       if (!ok) return const ActionOutcome.fail('user denied — biometric failed');
     }
     try {
-      return await _dispatch(cmd, context: context);
+      return await _dispatch(cmd, context: context)
+          .timeout(const Duration(seconds: 15),
+              onTimeout: () => ActionOutcome.fail('command timed out: $cmd'));
     } catch (e) {
       debugPrint('[executor] error for $cmd: $e');
       return ActionOutcome.fail(e.toString());
@@ -50,7 +52,7 @@ class PhoneCommandExecutor {
   }
 
   Future<ActionOutcome> _dispatch(String cmd, {BuildContext? context}) async {
-    final parts = cmd.split(' ');
+    final parts = cmd.trim().split(RegExp(r'\s+'));
     final verb = parts[0].toLowerCase();
     final arg = parts.skip(1).join(' ');
     switch (verb) {
@@ -97,7 +99,7 @@ class PhoneCommandExecutor {
       case 'list_apps':
         final apps =
             await _intents.invokeMethod<List>('listAppsWithLabels') ?? [];
-        return ActionOutcome.success(apps.cast<String>().join('\n'));
+        return ActionOutcome.success(apps.whereType<String>().join('\n'));
       case 'set_alarm':
         return _setAlarm(parts);
       case 'set_timer':
@@ -164,6 +166,9 @@ class PhoneCommandExecutor {
       return const ActionOutcome.fail('hour must be 0-23');
     }
     final minutes = parts.length > 2 ? (int.tryParse(parts[2]) ?? 0) : 0;
+    if (minutes < 0 || minutes > 59) {
+      return const ActionOutcome.fail('minutes must be 0-59');
+    }
     final label = parts.skip(3).join(' ');
     final ok = await _intents.invokeMethod<bool>('setAlarm', {
           'hour': hour,
@@ -217,10 +222,11 @@ class PhoneCommandExecutor {
     // (the user asked to message someone, not to land in Telegram).
     final prior = await _foregroundPackage();
 
-    final opened = await _intents.invokeMethod<bool>(
-            'openAppByName', {'name': 'Telegram'}) !=
-        null;
-    if (!opened) return const ActionOutcome.fail('Telegram is not installed');
+    final telegramLabel = await _intents.invokeMethod<String>(
+        'openAppByName', {'name': 'Telegram'});
+    if (telegramLabel == null) {
+      return const ActionOutcome.fail('Telegram is not installed');
+    }
     await Future.delayed(const Duration(milliseconds: 2500));
 
     // Open Telegram's search (magnifier — contentDescription "Search").
@@ -247,8 +253,12 @@ class PhoneCommandExecutor {
       return ActionOutcome.fail(
           'opened the chat but could not type the message');
     }
-    await Future.delayed(const Duration(milliseconds: 400));
-    final sent = await _click('Send') || await _click('Send message');
+    // Retry loop: link previews delay the Send button by up to 1s
+    bool sent = false;
+    for (int i = 0; i < 3 && !sent; i++) {
+      await Future.delayed(const Duration(milliseconds: 400));
+      sent = await _click('Send') || await _click('Send message');
+    }
     if (!sent) {
       // Leave them in Telegram so they can tap send themselves.
       return ActionOutcome.success(
@@ -278,11 +288,15 @@ class PhoneCommandExecutor {
   }
 
   Future<bool> _click(String query) async =>
-      await _accessibility.invokeMethod<bool>('clickByText', {'query': query}) ??
+      await _accessibility
+          .invokeMethod<bool>('clickByText', {'query': query})
+          .timeout(const Duration(seconds: 15), onTimeout: () => false) ??
       false;
 
   Future<bool> _type(String text) async =>
-      await _accessibility.invokeMethod<bool>('typeText', {'text': text}) ??
+      await _accessibility
+          .invokeMethod<bool>('typeText', {'text': text})
+          .timeout(const Duration(seconds: 15), onTimeout: () => false) ??
       false;
 
   Future<bool> _isAccessibilityEnabled() async {
@@ -316,7 +330,8 @@ class PhoneCommandExecutor {
     // Not open yet → open the live camera screen, wait for it, grab THAT frame.
     if (context != null && context.mounted) {
       await VisionMode.open(context);
-      if (VisionMode.isOpen) {
+      // Re-check mounted: VisionMode.open is async and context may be gone.
+      if (context.mounted && VisionMode.isOpen) {
         final b64 = await VisionMode.grab();
         if (b64 != null) return ActionOutcome.image(b64);
       }
@@ -332,6 +347,13 @@ class PhoneCommandExecutor {
       await c.initialize();
       final file = await c.takePicture();
       return ActionOutcome.image(base64Encode(await file.readAsBytes()));
+    } on CameraException catch (e) {
+      final desc = (e.description ?? '').toLowerCase();
+      if (desc.contains('in use') || desc.contains('camerainuse') || desc.contains('busy')) {
+        return const ActionOutcome.fail(
+            'camera is in use by another app — close it first');
+      }
+      return ActionOutcome.fail('camera failed: ${e.description}');
     } catch (e) {
       return ActionOutcome.fail('camera capture failed: $e');
     } finally {

@@ -71,8 +71,13 @@ class MainActivity : FlutterActivity() {
                         result.success(NemoAccessibilityService.swipe(x1, y1, x2, y2))
                     }
                     "typeText" -> {
+                        // typeText polls for up to 5s — must NOT run on the platform
+                        // thread or it blocks the Flutter UI engine and risks ANR.
                         val text = call.argument<String>("text") ?: ""
-                        result.success(NemoAccessibilityService.typeText(text))
+                        Thread {
+                            val ok = NemoAccessibilityService.typeText(text)
+                            Handler(Looper.getMainLooper()).post { result.success(ok) }
+                        }.start()
                     }
                     "pressButton" -> {
                         val button = call.argument<String>("button") ?: ""
@@ -191,6 +196,11 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun cleanupFlutterEngine(flutterEngine: io.flutter.embedding.engine.FlutterEngine) {
+        wakeWord?.stop()
+        super.cleanupFlutterEngine(flutterEngine)
     }
 
     override fun onDestroy() {

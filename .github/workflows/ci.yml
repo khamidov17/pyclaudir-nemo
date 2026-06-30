@@ -14,10 +14,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Sync deps
-        # --extra dev installs ruff + pytest (declared under
-        # [project.optional-dependencies].dev); a bare `uv sync` skips extras, so
-        # `uv run ruff`/`pytest` below would fail to spawn.
-        run: uv sync --extra dev
+        run: uv sync
 
       - name: Lint (ruff)
         run: |

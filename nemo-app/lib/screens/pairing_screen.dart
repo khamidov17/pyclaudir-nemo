@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/io_client.dart';
 import '../app_version.dart';
+import '../services/secure_net.dart';
 import '../theme.dart';
 import '../widgets/voice_orb.dart';
 import 'chat_list_screen.dart';
@@ -31,14 +33,39 @@ class _PairingScreenState extends State<PairingScreen> {
       setState(() => _error = 'Both fields required');
       return;
     }
-    if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-      setState(() => _error = 'URL must start with ws:// or wss://');
+    if (url.startsWith('ws://')) {
+      setState(() => _error = 'Use wss:// (encrypted). Plain ws:// is not allowed.');
+      return;
+    }
+    if (!url.startsWith('wss://')) {
+      setState(() => _error = 'URL must start with wss://');
       return;
     }
     setState(() {
       _saving = true;
       _error = null;
     });
+    // Verify connection before saving credentials (BUG-02/pairing).
+    // Reset TOFU pin so we probe the new server with a fresh pin slot.
+    await SecureNet.resetPin();
+    final httpUrl = url.replaceFirst('ws://', 'https://').replaceFirst('wss://', 'https://');
+    try {
+      final client = IOClient(await SecureNet.httpClient());
+      final resp = await client
+          .get(
+            Uri.parse('$httpUrl/health'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 8));
+      client.close();
+      if (resp.statusCode != 200) {
+        if (mounted) setState(() { _saving = false; _error = 'Server rejected credentials (${resp.statusCode})'; });
+        return;
+      }
+    } catch (e) {
+      if (mounted) setState(() { _saving = false; _error = 'Cannot reach server: $e'; });
+      return;
+    }
     await _storage.write(key: 'server_url', value: url);
     await _storage.write(key: 'app_token', value: token);
     if (mounted) {

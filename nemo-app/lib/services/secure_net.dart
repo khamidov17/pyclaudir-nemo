@@ -22,17 +22,25 @@ class SecureNet {
 
   static String? _pin;
   static bool _loaded = false;
+  // Singleton load future — concurrent httpClient() calls share this to avoid
+  // a TOFU race where both callers enter the branch and the last writer wins.
+  static Future<void>? _loadFuture;
   // Set when the user points the app at a DIFFERENT server (resetPin). The
   // build-time pin is for the known server; a deliberate server change falls
   // back to trust-on-first-use for the new host.
   static bool _tofuOverride = false;
 
+  static Future<void> _doLoad() async {
+    _pin = (_pinnedCertSha256.isNotEmpty && !_tofuOverride)
+        ? _pinnedCertSha256
+        : await _storage.read(key: 'server_cert_sha256');
+    _loaded = true;
+  }
+
   static Future<HttpClient> httpClient() async {
     if (!_loaded) {
-      _pin = (_pinnedCertSha256.isNotEmpty && !_tofuOverride)
-          ? _pinnedCertSha256
-          : await _storage.read(key: 'server_cert_sha256');
-      _loaded = true;
+      _loadFuture ??= _doLoad();
+      await _loadFuture;
     }
     final client = HttpClient();
     client.badCertificateCallback = (cert, host, port) {
@@ -41,11 +49,11 @@ class SecureNet {
         // No build-time pin set → trust-on-first-use fallback.
         _pin = fp;
         _storage.write(key: 'server_cert_sha256', value: fp);
-        debugPrint('SecureNet: pinned server cert $fp (TOFU)');
+        debugPrint('SecureNet: server cert pinned (TOFU)');
         return true;
       }
       final ok = fp == _pin;
-      if (!ok) debugPrint('SecureNet: REJECTED cert $fp (pin mismatch — MITM?)');
+      if (!ok) debugPrint('SecureNet: cert rejected (pin mismatch — MITM?)');
       return ok;
     };
     return client;
@@ -58,6 +66,7 @@ class SecureNet {
     _tofuOverride = true;
     _pin = null;
     _loaded = false;
+    _loadFuture = null;
     await _storage.delete(key: 'server_cert_sha256');
   }
 }

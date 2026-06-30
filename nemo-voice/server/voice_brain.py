@@ -361,7 +361,7 @@ def _remember(note: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     with _VOICE_NOTES.open("a") as f:
         f.write(f"- ({ts}) {note}\n")
-    LOG.info("voice remembered: %s", note[:80])
+    LOG.debug("voice remembered (%d chars)", len(note))
     return json.dumps({"status": "saved"})
 
 

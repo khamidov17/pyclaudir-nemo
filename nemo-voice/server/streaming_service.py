@@ -130,7 +130,7 @@ async def _ws_handler(websocket) -> None:
 
 
 def _check_required_env() -> None:
-    required = ["NEMO_APP_TOKEN"]
+    required = ["NEMO_APP_TOKEN", "VOICE_INTERNAL_TOKEN"]
     backend_key = {"qwen": "DASHSCOPE_API_KEY", "gemini": "GEMINI_API_KEY"}.get(
         VOICE_BACKEND, "DEEPGRAM_API_KEY"
     )

@@ -477,15 +477,26 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
         f'user_id="{row["user_id"]}">{row["text"]}</reminder>'
     )
     # E3: if VOICE_PROACTIVE=1 and this is a spoken reminder (not a delegated task),
-    # also inject it directly into the active voice session as a fire-and-forget.
+    # inject it into the active voice session. If the voice server accepts it (202),
+    # skip engine.submit() to avoid double-delivery (BUG-11/proactive).
+    _voice_injected = False
     if os.environ.get("VOICE_PROACTIVE", "0").strip() == "1" and not row[
         "text"
     ].startswith("[Background task"):
-        import asyncio as _asyncio
-
         from .voice_bridge import post_proactive
 
-        _asyncio.create_task(post_proactive(row["text"]))
+        _voice_injected = await post_proactive(row["text"])
+
+    if _voice_injected:
+        # Reminder delivered via voice — advance/close without engine.submit().
+        # Guard with the same rollback that on_failure uses: if advance/close raises
+        # (DB error, bad cron_expr, etc.), roll back to pending so it can retry.
+        try:
+            await _advance_or_close_reminder(db, row)
+        except Exception:
+            log.exception("reminder #%d voice-inject succeeded but advance failed; resetting to pending", row["id"])
+            await reset_reminder_to_pending(db, row["id"])
+        return
     # P3 voice weave-in: if kick body included voice_session_id and streaming is
     # enabled, build an on_chunk callback so the engine POSTs clause chunks to
     # the live voice session as they arrive (VOICE_STREAM_BRAIN=1 path).
