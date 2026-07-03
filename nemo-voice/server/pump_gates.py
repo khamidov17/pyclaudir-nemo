@@ -15,6 +15,8 @@ from typing import Any
 
 import ambient
 import speaker_gate
+import translator
+import voice_brain
 import voice_history
 from pump_tools import _tool_output
 
@@ -71,6 +73,61 @@ class _GatesMixin:
             voice_history.add("user", transcript)
         else:
             LOG.info("ambient: unverified speech dropped (not journaled)")
+        return True
+
+    async def _translator_on(self, lang: str) -> None:
+        self._ctx.translator_lang = lang
+        LOG.info("translator mode ON → %s", lang)
+        await self._set_auto_respond(False)
+        await self.link.send(
+            {
+                "type": "session.update",
+                "session": {"instructions": translator.instructions(lang)},
+            }
+        )
+        await self.link.inject_text(
+            "[Mode change: confirm in Avazbek's language, in a few "
+            f"words, that you are now interpreting {lang}.]"
+        )
+
+    async def _translator_off(self) -> None:
+        LOG.info("translator mode OFF")
+        self._ctx.translator_lang = None
+        self._ctx.translator_aside = False
+        await self._set_auto_respond(True)
+        await self.link.send(
+            {
+                "type": "session.update",
+                "session": {"instructions": voice_brain.build_prompt(True)},
+            }
+        )
+        await self.link.inject_text(
+            "[Mode change: interpreting is over — confirm briefly, back "
+            "to normal assistant.]"
+        )
+
+    async def _translator_gate(self, transcript: str) -> bool:
+        """Interpreter mode: every turn gets a direction hint, nothing more.
+        Returns True when this turn was handled as translation/aside."""
+        ctx = self._ctx
+        if ctx.translator_lang is None:
+            lang = translator.on_intent(transcript)
+            if lang:
+                await self._translator_on(lang)
+                return True
+            return False
+        if translator.is_off_intent(transcript):
+            await self._translator_off()
+            return True
+        owner = self._speaker.last_verdict in (
+            speaker_gate.Verdict.OWNER,
+            speaker_gate.Verdict.OFF,
+        )
+        ctx.translator_aside = owner and ambient.is_addressed(transcript)
+        hint = translator.turn_hint(
+            ctx.translator_lang, owner_voice=owner, aside=ctx.translator_aside
+        )
+        await self.link.inject_text(hint)
         return True
 
     async def _verify_speaker(self) -> None:

@@ -14,6 +14,7 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
+import 'location_streamer.dart';
 import 'secure_net.dart';
 
 const _storage = FlutterSecureStorage(
@@ -119,6 +120,12 @@ class VoiceChatService extends ChangeNotifier {
   final StreamController<Map<String, dynamic>> _actions =
       StreamController.broadcast();
   Stream<Map<String, dynamic>> get actions => _actions.stream;
+
+  final LocationStreamer _location = LocationStreamer();
+
+  void sendLocation(double lat, double lon) {
+    _ws?.sink.add(jsonEncode({'type': 'location', 'lat': lat, 'lon': lon}));
+  }
 
   void sendActionResult(String id,
       {bool ok = true, String? text, String? error, String? imageB64}) {
@@ -404,6 +411,12 @@ class VoiceChatService extends ChangeNotifier {
           _stopMeetingRecordingAndUpload();
         case 'action':
           _actions.add(data);
+        case 'nav_start':
+          // Server navigation started: stream GPS on this same authenticated
+          // ws so Nemo can speak turn-by-turn guidance.
+          _location.start(sendLocation);
+        case 'nav_stop':
+          _location.stop();
         case 'error':
           if (!_disposed && !_errors.isClosed) _errors.add(data['message'] as String? ?? 'Voice error');
       }
@@ -583,6 +596,7 @@ class VoiceChatService extends ChangeNotifier {
     _wsSub?.cancel();
     _ws?.sink.close(ws_status.goingAway);
     _ws = null;
+    _location.stop();
     _muted = false;
     _muteWatchdog?.cancel();
     // Restore normal audio routing (undo comm-mode/speakerphone). No-op when off.

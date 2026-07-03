@@ -54,6 +54,41 @@ class ScriptedBackend:
         yield {"audio": b"\x00\x01" * 160}
 
 
+NAV_PORT = 8791
+
+
+async def run_fake_nav_api():
+    """Offline Nominatim+OSRM stand-in: geocodes anything to (0.02, 0.0) and
+    returns a two-step route matching the unit-test geometry."""
+    from aiohttp import web
+
+    async def search(_req):
+        return web.json_response([{"lat": "41.02", "lon": "69.0"}])
+
+    async def route(_req):
+        steps = [
+            {
+                "maneuver": {
+                    "type": "turn",
+                    "modifier": "right",
+                    "location": [69.0, 41.01],
+                },
+                "name": "Amir Temur",
+            },
+            {"maneuver": {"type": "arrive", "location": [69.0, 41.02]}, "name": ""},
+        ]
+        return web.json_response({"routes": [{"legs": [{"steps": steps}]}]})
+
+    app = web.Application()
+    app.router.add_get("/search", search)
+    app.router.add_get("/route/v1/driving/{coords}", route)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", NAV_PORT)
+    await site.start()
+    return runner
+
+
 async def run_gateway(backend: ScriptedBackend):
     import websockets
     from protocol import GatewaySession
@@ -88,6 +123,8 @@ def start_voice_server(data_dir: str) -> subprocess.Popen:
         "NEMO_UTC_OFFSET": str(12 - utc_hour),
         "VOICE_AMBIENT": "1",
         "VOICE_SPEAKER_LOCK": "1",
+        "NAV_GEOCODE_URL": f"http://127.0.0.1:{NAV_PORT}/search",
+        "OSRM_URL": f"http://127.0.0.1:{NAV_PORT}",
         "SPEAKER_EMBEDDER": "energy",
         "VOICE_PORT": str(VOICE_PORT),
         "VOICE_HTTP_PORT": str(VOICE_PORT + 1),
@@ -175,6 +212,9 @@ class PhoneClient:
 
     async def inject(self, text: str) -> None:
         await self.ws.send(json.dumps({"type": "inject", "text": text}))
+
+    async def send_location(self, lat: float, lon: float) -> None:
+        await self.ws.send(json.dumps({"type": "location", "lat": lat, "lon": lon}))
 
     async def speak_turn(self, amp: int = 3000) -> None:
         """Stream one spoken 'utterance': ~300ms voice then ~900ms silence.

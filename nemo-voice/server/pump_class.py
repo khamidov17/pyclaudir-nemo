@@ -23,6 +23,7 @@ from pump_tools import (
     _PROTECTED_TOOLS,
     _SessionCtx,
     _handle_tool,
+    _tool_output,
     _track_usage,
 )
 
@@ -104,6 +105,10 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
             LOG.info("deactivate on request — session to sleep")
             await self.link.send({"type": "response.cancel"})
             await self._send({"type": "deactivate"})
+            await self._send({"type": "user_transcript", "data": transcript})
+            return
+        if await self._translator_gate(transcript):
+            self._user_turn_ts = time.monotonic()
             await self._send({"type": "user_transcript", "data": transcript})
             return
         if voice_intent.is_record_stop_intent(transcript):
@@ -238,6 +243,18 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
         if name in _PROTECTED_TOOLS and not self._speaker.allow_sensitive():
             await self._refuse_unverified(item)
             return
+        if self._ctx.translator_lang and not self._ctx.translator_aside:
+            LOG.info("translator mode: tool %s suppressed (not an aside)", name)
+            await _tool_output(
+                self.link,
+                item.get("call_id", ""),
+                json.dumps({"error": "interpreting right now — just translate"}),
+            )
+            return
+        if name == "start_navigation":
+            await self._send({"type": "nav_start"})
+        elif name == "stop_navigation":
+            await self._send({"type": "nav_stop"})
         # FLOW-01: phone actions take up to 20s — extend watchdog past action_bridge timeout.
         if name and name in _PHONE_ACTION_TOOL_NAMES:
             self._arm_turn_timer(idle_sec=self._ACTION_TURN_IDLE_SEC)

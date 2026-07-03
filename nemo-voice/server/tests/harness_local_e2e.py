@@ -28,6 +28,7 @@ from harness_stack import (  # noqa: E402
     SERVER_DIR,
     PhoneClient,
     ScriptedBackend,
+    run_fake_nav_api,
     run_gateway,
     start_voice_server,
 )
@@ -277,12 +278,85 @@ async def phase_proactive(c: PhoneClient) -> None:
     check("Nemo spoke up unprompted", "klinika" in c.texts().lower(), c.texts()[:100])
 
 
+async def phase_translator(c: PhoneClient, b: ScriptedBackend) -> None:
+    print("phase 10: translator mode — direction hints, aside, strict no-answer")
+    b.transcripts.append("translator mode for chinese")
+    c.events.clear()
+    await c.speak_turn()
+    await c.drain(4)
+    check("mode-on confirmed", "Mode change" in c.texts(), c.texts()[:60])
+
+    b.transcripts.append("bu narsa qancha turadi?")
+    c.events.clear()
+    await c.speak_turn(amp=3000)  # owner voice
+    await c.drain(3)
+    check(
+        "owner speech → to Chinese",
+        "render this in Chinese" in c.texts(),
+        c.texts()[:80],
+    )
+
+    b.transcripts.append("zhege yibai kuai")
+    c.events.clear()
+    await c.speak_turn(amp=31000)  # the other person
+    await c.drain(3)
+    check(
+        "other speech → to Avazbek, no answering",
+        "Other speaker" in c.texts() and "Do not answer" in c.texts(),
+        c.texts()[:80],
+    )
+
+    b.transcripts.append("nemo, is that a fair price here?")
+    b.replies.append([{"text": "yo'q, bozorda ellik bo'ladi"}])
+    c.events.clear()
+    await c.speak_turn(amp=3000)
+    await c.drain(3)
+    check("aside answered to owner only", "ellik" in c.texts(), c.texts()[:60])
+
+    b.transcripts.append("okay stop translating now")
+    c.events.clear()
+    await c.speak_turn(amp=3000)
+    await c.drain(4)
+    check("mode off confirmed", "Mode change" in c.texts(), c.texts()[:60])
+
+
+async def phase_guidance(c: PhoneClient, b: ScriptedBackend) -> None:
+    print("phase 11: voice guidance — route, maneuvers, arrival (offline OSRM)")
+    lat_m = 0.001 / 111.0
+    b.replies.append(
+        _tool_call("start_navigation", {"destination": "the clinic"}, "n1")
+    )
+    b.replies.append([{"text": "ketdik, yo'l boshlanadi"}])
+    c.events.clear()
+    await c.inject("navigate me to the clinic")
+    await c.wait_for("nav_start", timeout=15)
+    check("nav_start reached phone", True)
+
+    await c.send_location(41.0, 69.0)  # first fix → route built
+    await c.drain(7)  # inject_when_idle waits out the current turn
+    check("route ready spoken", "route ready" in c.texts(), c.texts()[-80:])
+
+    await c.send_location(41.0100 - 450 * lat_m, 69.0)
+    await c.drain(6)
+    check(
+        "500m maneuver spoken",
+        "in 500 meters" in c.texts() and "turn right" in c.texts(),
+        c.texts()[-90:],
+    )
+
+    await c.send_location(41.0100 - 10 * lat_m, 69.0)  # advance past step 1
+    await c.send_location(41.0200 - 20 * lat_m, 69.0)  # arrive
+    await c.drain(6)
+    check("arrival spoken", "arrived at the clinic" in c.texts(), c.texts()[-80:])
+
+
 async def main() -> int:
     data_dir = tempfile.mkdtemp(prefix="nemo-harness-")
     seed_followup(data_dir)
     enroll_owner(data_dir)
     backend = ScriptedBackend()
     gw = await run_gateway(backend)
+    nav_api = await run_fake_nav_api()
     proc = start_voice_server(data_dir)
     await asyncio.sleep(2.5)
     try:
@@ -296,9 +370,12 @@ async def main() -> int:
             await phase_vision(c, backend)
             await phase_voicelock(c, backend)
             await phase_ambient(c, backend, data_dir)
+            await phase_translator(c, backend)
+            await phase_guidance(c, backend)
     finally:
         proc.terminate()
         gw.close()
+        await nav_api.cleanup()
     ok = all(CHECKS)
     print(
         f"\nRESULT: {sum(CHECKS)}/{len(CHECKS)} checks —",

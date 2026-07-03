@@ -16,6 +16,7 @@ import base64
 import fact_extractor
 import memory_migrate
 import memory_store
+import navigation
 import speaker_gate
 import voice_facts
 import voice_history
@@ -93,6 +94,25 @@ def _tee_speaker_audio(ctx, b64: str) -> None:
         pass
 
 
+async def _on_location_frame(link: QwenLink, data: dict) -> None:
+    """GPS fix from the phone → navigation announcements woven into speech.
+    Coordinates are used in-memory only — never journaled."""
+    try:
+        lat, lon = float(data.get("lat", 0)), float(data.get("lon", 0))
+    except (TypeError, ValueError):
+        return
+    if not navigation.active() or not (lat or lon):  # (0,0) = no real GPS fix
+        return
+    for text in await navigation.on_location(lat, lon):
+        prompt = (
+            f"[Navigation guidance — say this naturally in the conversation's "
+            f"language, nothing else: {text}]"
+        )
+        # Background: waiting for a conversation gap must not stall the mic
+        # relay this loop also carries.
+        link.spawn_bg(lambda _p=prompt: link.inject_text_when_idle(_p))
+
+
 async def _recv_client(client_ws, link: QwenLink, bridge, ctx=None) -> None:
     """App → Qwen: stream mic audio, resolve tool results, inject text."""
     async for raw in client_ws:
@@ -108,6 +128,8 @@ async def _recv_client(client_ws, link: QwenLink, bridge, ctx=None) -> None:
             if b64:
                 _tee_speaker_audio(ctx, b64)
                 await link.send({"type": "input_audio_buffer.append", "audio": b64})
+        elif msg_type == "location":
+            await _on_location_frame(link, data)
         elif msg_type == "inject":
             text = data.get("text", "")
             if text:

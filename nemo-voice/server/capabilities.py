@@ -18,6 +18,7 @@ from dataclasses import dataclass
 import assistant_tools
 import memory_tools
 import messages
+import navigation
 import phone_tools
 import reminders
 import skills
@@ -88,6 +89,13 @@ _VISION = (
     "use_screen=true) and you tell him what you see. Describe a person if asked, but never claim "
     "to know a stranger's real identity. To save something for later, `look` then `remember` what "
     "you found.\n"
+)
+_NAVIGATION = (
+    "NAVIGATION. When he asks you to direct/navigate/guide him somewhere, call "
+    "`start_navigation` with the destination — his phone streams GPS and you'll receive "
+    "guidance lines to speak ('in 500 meters, turn right…'); say them naturally in the "
+    "conversation's language the moment they arrive. `stop_navigation` when he says stop. "
+    "You can still chat normally while guiding.\n"
 )
 _RECORDING = (
     "RECORDING MEETINGS. When he says 'record this' / 'start recording' or 'stop recording', the "
@@ -189,6 +197,13 @@ REGISTRY: tuple[Capability, ...] = (
         tool_names=frozenset(memory_tools.TOOL_NAMES),
         dispatch=_async_only(memory_tools),
         context_fetcher=memory_tools.shared_memory_context,
+    ),
+    Capability(
+        id="navigation",
+        prompt_fragment=_NAVIGATION,
+        functions=tuple(navigation.FUNCTIONS),
+        tool_names=frozenset(navigation.TOOL_NAMES),
+        dispatch=_async_only(navigation),
     ),
     Capability(
         id="reminders",

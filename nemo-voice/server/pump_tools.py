@@ -49,6 +49,8 @@ class _SessionCtx:
         default_factory=speaker_gate.SpeakerState
     )
     ambient_on: bool = False
+    translator_lang: str | None = None  # target language while interpreting
+    translator_aside: bool = False  # current turn is an aside to Nemo
 
 
 # ── thin helpers ──────────────────────────────────────────────────────────────
