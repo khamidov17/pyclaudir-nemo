@@ -122,9 +122,17 @@ def ack_infra(event: Event) -> None:
 
 # ── registry ────────────────────────────────────────────────────────────────
 
+
+def _study_watcher() -> tuple:
+    import study_coach
+
+    return ("study", study_coach.poll_study, study_coach.ack_study)
+
+
 WATCHERS = (
     ("followup", poll_followups, ack_followup),
     ("infra", poll_infra, ack_infra),
+    _study_watcher(),
 )
 
 

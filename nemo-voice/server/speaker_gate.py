@@ -39,6 +39,7 @@ LOG = logging.getLogger("nemo.speaker_gate")
 
 _OWNER_COS = float(os.environ.get("SPEAKER_OWNER_COS", "0.82"))
 _UNSURE_COS = float(os.environ.get("SPEAKER_UNSURE_COS", "0.60"))
+_GUEST_COS = float(os.environ.get("SPEAKER_GUEST_COS", "0.80"))
 _MIN_PCM_BYTES = 16000 * 2 // 2  # ≥0.5s at 16k mono — shorter can't verify
 _SAMPLE_RATE = 16000
 
@@ -113,43 +114,82 @@ def _cosine(a: list[float], b: list[float]) -> float:
 # ── enrollment + verification ───────────────────────────────────────────────
 
 
+def _load_all() -> dict:
+    try:
+        return json.loads(_profile_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_all(data: dict) -> None:
+    path = _profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data))
+
+
 def enroll(pcm: bytes) -> bool:
     vec = _embed(pcm)
     if vec is None:
         return False
-    path = _profile_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"owner": vec}))
-    LOG.info("voiceprint enrolled (%d dims)", len(vec))
+    data = _load_all()
+    data["owner"] = vec
+    _save_all(data)
+    LOG.info("owner voiceprint enrolled (%d dims)", len(vec))
+    return True
+
+
+def enroll_guest(name: str, pcm: bytes) -> bool:
+    """Named guest voiceprint — attribution only, never access."""
+    vec = _embed(pcm)
+    if vec is None or len(pcm) < _MIN_PCM_BYTES:
+        return False
+    data = _load_all()
+    data.setdefault("guests", {})[name[:40]] = vec
+    _save_all(data)
+    LOG.info("guest voiceprint enrolled: %s", name)
     return True
 
 
 def _load_profile() -> list[float] | None:
-    try:
-        return json.loads(_profile_path().read_text())["owner"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        return None
+    owner = _load_all().get("owner")
+    return owner if isinstance(owner, list) else None
+
+
+def _match_guest(vec: list[float]) -> str | None:
+    guests = _load_all().get("guests") or {}
+    best, best_score = None, 0.0
+    for name, gvec in guests.items():
+        score = _cosine(vec, gvec)
+        if score > best_score:
+            best, best_score = name, score
+    return best if best_score >= _GUEST_COS else None
 
 
 def verify(pcm: bytes) -> Verdict:
     """Blocking (~100-300ms with resemblyzer) — call via asyncio.to_thread."""
+    return identify(pcm)[0]
+
+
+def identify(pcm: bytes) -> tuple[Verdict, str | None]:
+    """(verdict, speaker_name). Name is set for the owner ('Avazbek') and for
+    enrolled guests; guests get attribution in memory, never tool access."""
     if not enabled():
-        return Verdict.OFF
+        return Verdict.OFF, None
     if len(pcm) < _MIN_PCM_BYTES:
-        return Verdict.UNSURE  # too short to judge — second factor decides
+        return Verdict.UNSURE, None  # too short — second factor decides
     profile = _load_profile()
     if profile is None:
         LOG.warning("speaker lock on but no voiceprint enrolled — gate OFF")
-        return Verdict.OFF
+        return Verdict.OFF, None
     vec = _embed(pcm)
     if vec is None:
-        return Verdict.OFF
+        return Verdict.OFF, None
     score = _cosine(vec, profile)
     if score >= _OWNER_COS:
-        return Verdict.OWNER
+        return Verdict.OWNER, "Avazbek"
     if score >= _UNSURE_COS:
-        return Verdict.UNSURE
-    return Verdict.STRANGER
+        return Verdict.UNSURE, None
+    return Verdict.STRANGER, _match_guest(vec)
 
 
 # ── per-session state ───────────────────────────────────────────────────────
@@ -161,6 +201,8 @@ class SpeakerState:
 
     pcm_buf: bytearray = field(default_factory=bytearray)
     last_verdict: Verdict = Verdict.OFF
+    name: str | None = None  # who spoke last (owner or enrolled guest)
+    pending_enroll: str | None = None  # next non-owner turn enrolls this name
     session_verified: bool = False  # set by a passed phone-biometric check
     biometric_pending: bool = False
 
@@ -169,8 +211,9 @@ class SpeakerState:
         self.pcm_buf.clear()
         return pcm
 
-    def record(self, verdict: Verdict) -> None:
+    def record(self, verdict: Verdict, name: str | None = None) -> None:
         self.last_verdict = verdict
+        self.name = name
         if verdict is Verdict.OWNER:
             self.session_verified = True
 

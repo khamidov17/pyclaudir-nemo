@@ -16,11 +16,69 @@ import logging
 import math
 import os
 import urllib.request
+from dataclasses import dataclass
 
 import memory_store
-from memory_store import Row
+from memory_store import pack, unpack
 
 LOG = logging.getLogger("nemo.memory_search")
+
+
+# ── rows for search / embedding (relocated from memory_store) ──────────────
+
+_TABLES = {"fact": "facts", "episode": "episodes", "procedure": "procedures"}
+
+
+@dataclass(frozen=True)
+class Row:
+    """One searchable memory row: kind is 'fact' | 'episode' | 'procedure'."""
+
+    kind: str
+    id: int
+    text: str
+    vec: tuple[float, ...] | None
+
+
+def searchable_rows(kinds: tuple[str, ...]) -> list[Row]:
+    """All live rows of the given kinds with their vectors (None if unembedded)."""
+    con = memory_store.connect()
+    try:
+        out: list[Row] = []
+        for kind in kinds:
+            table = _TABLES[kind]
+            where = "WHERE superseded_by IS NULL" if kind == "fact" else ""
+            rows = con.execute(f"SELECT id, text, vec FROM {table} {where}").fetchall()
+            out.extend(
+                Row(kind, int(i), str(t), unpack(b) if b else None) for i, t, b in rows
+            )
+        return out
+    finally:
+        con.close()
+
+
+def unembedded(kind: str, limit: int = 64) -> list[tuple[int, str]]:
+    con = memory_store.connect()
+    try:
+        rows = con.execute(
+            f"SELECT id, text FROM {_TABLES[kind]} WHERE vec IS NULL LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [(int(i), str(t)) for i, t in rows]
+    finally:
+        con.close()
+
+
+def store_vectors(kind: str, vecs: list[tuple[int, list[float]]]) -> None:
+    con = memory_store.connect()
+    try:
+        con.executemany(
+            f"UPDATE {_TABLES[kind]} SET vec = ? WHERE id = ?",
+            [(pack(v), i) for i, v in vecs],
+        )
+        con.commit()
+    finally:
+        con.close()
+
 
 _EMBED_URL = os.environ.get(
     "QWEN_EMBED_URL",
@@ -101,7 +159,7 @@ def search(
     q = (query or "").strip()
     if not q:
         return []
-    rows = memory_store.searchable_rows(kinds)
+    rows = searchable_rows(kinds)
     qterms = _terms(q)
     qv = embed([q]) if available() else None
     scored: list[tuple[float, Row]] = []
@@ -130,7 +188,7 @@ def find_similar_facts(text: str, k: int = 3) -> list[tuple[float, Row]]:
     qv = embed([text])
     if not qv:
         return []
-    hits = knn(qv[0], memory_store.searchable_rows(("fact",)))
+    hits = knn(qv[0], searchable_rows(("fact",)))
     hits.sort(key=lambda x: x[0], reverse=True)
     return hits[:k]
 
@@ -142,14 +200,12 @@ def embed_pending() -> int:
         return 0
     done = 0
     for kind in ("fact", "episode", "procedure"):
-        todo = memory_store.unembedded(kind)
+        todo = unembedded(kind)
         for i in range(0, len(todo), _BATCH):
             batch = todo[i : i + _BATCH]
             vecs = embed([t for _, t in batch])
             if vecs is None:
                 return done
-            memory_store.store_vectors(
-                kind, [(rid, v) for (rid, _), v in zip(batch, vecs)]
-            )
+            store_vectors(kind, [(rid, v) for (rid, _), v in zip(batch, vecs)])
             done += len(batch)
     return done

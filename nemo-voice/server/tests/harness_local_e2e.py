@@ -350,6 +350,78 @@ async def phase_guidance(c: PhoneClient, b: ScriptedBackend) -> None:
     check("arrival spoken", "arrived at the clinic" in c.texts(), c.texts()[-80:])
 
 
+async def phase_ledger(c: PhoneClient, b: ScriptedBackend) -> None:
+    print("phase 12: voice ledger — log spending, SQL summary")
+    b.replies.append(
+        _tool_call("log_expense", {"amount": 50000, "category": "food"}, "l1")
+    )
+    c.events.clear()
+    await c.inject("50 ming tushlikka ketdi")
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(2)
+    check("expense logged", '"logged"' in c.texts(), c.texts()[:60])
+
+    b.replies.append(_tool_call("ledger_summary", {"period": "week"}, "l2"))
+    c.events.clear()
+    await c.inject("bu hafta qancha ishlatdim?")
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(2)
+    check(
+        "summary from real SQL",
+        "50000" in c.texts() and "food" in c.texts(),
+        c.texts()[:90],
+    )
+
+
+async def phase_multispeaker(c: PhoneClient, b: ScriptedBackend, data_dir: str) -> None:
+    print("phase 13: multi-speaker memory — enroll Aziz, attribute, no access")
+    b.transcripts.append("nemo, remember Aziz's voice")
+    b.replies.append(_tool_call("enroll_speaker", {"name": "Aziz"}, "m1"))
+    c.events.clear()
+    await c.speak_turn(amp=3000)  # owner asks
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(2)
+    check("enrollment armed", "listening" in c.texts(), c.texts()[:70])
+
+    b.transcripts.append("salom men Azizman")
+    c.events.clear()
+    await c.speak_turn(amp=31000)  # Aziz speaks → becomes his voiceprint
+    await c.drain(4)
+    check(
+        "guest enrolled by voice", "enrollment succeeded" in c.texts(), c.texts()[:80]
+    )
+
+    b.transcripts.append("kechqurun futbolga boramizmi")
+    c.events.clear()
+    await c.speak_turn(amp=31000)  # Aziz again → attributed
+    await c.wait_for("turn_complete", timeout=15)
+    await asyncio.sleep(1.0)
+    eps = db_rows(data_dir, "SELECT text, speaker FROM episodes")
+    check(
+        "guest speech attributed in memory",
+        any(t.startswith("Aziz:") and s == "Aziz" for t, s in eps),
+        str([e for e in eps if e[1] == "Aziz"][:1]),
+    )
+
+    await _guest_tries_protected_tool(c, b)
+
+
+async def _guest_tries_protected_tool(c: PhoneClient, b: ScriptedBackend) -> None:
+    b.transcripts.append("log fifty thousand for me")
+    b.replies.append(
+        _tool_call("log_expense", {"amount": 50000, "category": "fun"}, "m2")
+    )
+    c.events.clear()
+    await c.speak_turn(amp=31000)  # Aziz tries a protected tool
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(2)
+    check(
+        "guest still blocked from owner tools",
+        "owner-only" in c.texts(),
+        c.texts()[:80],
+    )
+
+
 async def main() -> int:
     data_dir = tempfile.mkdtemp(prefix="nemo-harness-")
     seed_followup(data_dir)
@@ -372,6 +444,8 @@ async def main() -> int:
             await phase_ambient(c, backend, data_dir)
             await phase_translator(c, backend)
             await phase_guidance(c, backend)
+            await phase_ledger(c, backend)
+            await phase_multispeaker(c, backend, data_dir)
     finally:
         proc.terminate()
         gw.close()

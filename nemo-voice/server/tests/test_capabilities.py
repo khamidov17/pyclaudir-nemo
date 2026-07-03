@@ -12,12 +12,14 @@ import pytest
 
 import assistant_tools
 import capabilities
+import ledger
 import memory_tools
 import navigation
 import messages
 import phone_tools
 import reminders
 import skills
+import study_coach
 import vision
 import voice_brain
 import web_search
@@ -45,6 +47,8 @@ def test_functions_cover_every_module() -> None:
     names = {f["name"] for f in voice_brain.FUNCTIONS}
     expected = (
         memory_tools.TOOL_NAMES
+        | ledger.TOOL_NAMES
+        | study_coach.TOOL_NAMES
         | navigation.TOOL_NAMES
         | phone_tools.PHONE_TOOL_NAMES
         | reminders.TOOL_NAMES

@@ -61,7 +61,7 @@ def test_prompt_includes_v2_profile():
 @pytest.mark.asyncio
 async def test_context_fetcher_routes_to_v2(monkeypatch):
     memory_store.add_fact("Avazbek likes dark roast")
-    row = memory_store.searchable_rows(("fact",))[0]
+    row = memory_search.searchable_rows(("fact",))[0]
     monkeypatch.setattr(memory_search, "search", lambda q, limit=4: [row])
     out = await memory_tools.shared_memory_context("coffee")
     assert out == ["[known] Avazbek likes dark roast"]

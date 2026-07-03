@@ -43,17 +43,21 @@ def _load_recent() -> list[dict]:
         return []
 
 
-def add(role: str, text: str) -> None:
-    """Record one spoken turn (role: 'user' or 'nemo') in both stores."""
+def add(role: str, text: str, speaker: str = "") -> None:
+    """Record one spoken turn (role: 'user' or 'nemo') in both stores.
+    ``speaker`` attributes multi-speaker turns; enrolled guests get their name
+    woven into the stored text ("Aziz: …") so recall finds who said what."""
     text = (text or "").strip()
     if not text:
         return
+    if speaker and speaker != "Avazbek":
+        text = f"{speaker}: {text}"
     items = _load_recent()
     items.append({"role": role, "text": text[:300], "ts": time.time()})
     items = items[-_MAX_TURNS:]
     if memory_store.memory_v2_enabled():
         try:
-            memory_store.add_episode("voice", role, text)
+            memory_store.add_episode("voice", role, text, speaker=speaker)
         except Exception as exc:  # noqa: BLE001 — v2 mirror must not break the turn
             LOG.warning("episode mirror failed: %s", exc)
     try:

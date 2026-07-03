@@ -26,11 +26,25 @@ _BG_TOOLS: frozenset[str] = frozenset({"web_search", "look"})
 _SENSITIVE_TOOLS: frozenset[str] = frozenset({"read_messages"})
 # Phone-action tools that block synchronously on the phone — need extended watchdog.
 _PHONE_ACTION_TOOL_NAMES: frozenset[str] = frozenset(_phone_tools.PHONE_TOOL_NAMES)
-# Owner-only when the speaker lock is on: private data, phone control, memory.
+# Owner-only when the speaker lock is on: private data, phone control, memory,
+# finances, and anything that writes on Avazbek's behalf.
 _PROTECTED_TOOLS: frozenset[str] = (
     _SENSITIVE_TOOLS
     | _PHONE_ACTION_TOOL_NAMES
-    | frozenset({"remember", "recall", "search_chat", "send_telegram", "delegate_task"})
+    | frozenset(
+        {
+            "remember",
+            "recall",
+            "search_chat",
+            "send_telegram",
+            "delegate_task",
+            "enroll_speaker",
+            "log_expense",
+            "log_habit",
+            "ledger_summary",
+            "add_flashcard",
+        }
+    )
 )
 
 

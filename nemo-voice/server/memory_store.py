@@ -24,7 +24,6 @@ import logging
 import os
 import sqlite3
 import struct
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +36,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     ts TEXT NOT NULL,
     role TEXT NOT NULL,
     text TEXT NOT NULL,
+    speaker TEXT NOT NULL DEFAULT '',
     vec BLOB
 );
 CREATE TABLE IF NOT EXISTS facts (
@@ -71,16 +71,6 @@ CREATE INDEX IF NOT EXISTS idx_followups_status ON followups(status);
 """
 
 
-@dataclass(frozen=True)
-class Row:
-    """One searchable memory row: kind is 'fact' | 'episode' | 'procedure'."""
-
-    kind: str
-    id: int
-    text: str
-    vec: tuple[float, ...] | None
-
-
 def memory_v2_enabled() -> bool:
     """Feature flag, read at call time so tests and .env loading both work."""
     return os.environ.get("VOICE_MEMORY_V2", "0").strip() == "1"
@@ -102,6 +92,11 @@ def connect() -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA busy_timeout=5000")
     con.executescript(_SCHEMA)
+    # Lightweight migration: DBs created before multi-speaker memory lack the
+    # speaker column (CREATE IF NOT EXISTS won't add it).
+    cols = {c[1] for c in con.execute("PRAGMA table_info(episodes)")}
+    if "speaker" not in cols:
+        con.execute("ALTER TABLE episodes ADD COLUMN speaker TEXT NOT NULL DEFAULT ''")
     return con
 
 
@@ -120,16 +115,18 @@ def unpack(blob: bytes) -> tuple[float, ...]:
 # ── episodes ────────────────────────────────────────────────────────────────
 
 
-def add_episode(session_id: str, role: str, text: str) -> int:
-    """Record one utterance. vec stays NULL; embed_pending() fills it later."""
+def add_episode(session_id: str, role: str, text: str, speaker: str = "") -> int:
+    """Record one utterance. vec stays NULL; embed_pending() fills it later.
+    ``speaker`` attributes multi-speaker turns (meetings, ambient guests)."""
     text = (text or "").strip()
     if not text:
         return 0
     con = connect()
     try:
         cur = con.execute(
-            "INSERT INTO episodes (session_id, ts, role, text) VALUES (?, ?, ?, ?)",
-            (session_id, _now(), role, text[:1000]),
+            "INSERT INTO episodes (session_id, ts, role, text, speaker)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (session_id, _now(), role, text[:1000], speaker[:40]),
         )
         con.commit()
         return int(cur.lastrowid or 0)
@@ -248,52 +245,6 @@ def resolve_followup(followup_id: int, status: str = "done") -> None:
     try:
         con.execute(
             "UPDATE followups SET status = ? WHERE id = ?", (status, followup_id)
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-# ── rows for search / embedding ─────────────────────────────────────────────
-
-_TABLES = {"fact": "facts", "episode": "episodes", "procedure": "procedures"}
-
-
-def searchable_rows(kinds: tuple[str, ...]) -> list[Row]:
-    """All live rows of the given kinds with their vectors (None if unembedded)."""
-    con = connect()
-    try:
-        out: list[Row] = []
-        for kind in kinds:
-            table = _TABLES[kind]
-            where = "WHERE superseded_by IS NULL" if kind == "fact" else ""
-            rows = con.execute(f"SELECT id, text, vec FROM {table} {where}").fetchall()
-            out.extend(
-                Row(kind, int(i), str(t), unpack(b) if b else None) for i, t, b in rows
-            )
-        return out
-    finally:
-        con.close()
-
-
-def unembedded(kind: str, limit: int = 64) -> list[tuple[int, str]]:
-    con = connect()
-    try:
-        rows = con.execute(
-            f"SELECT id, text FROM {_TABLES[kind]} WHERE vec IS NULL LIMIT ?",
-            (limit,),
-        ).fetchall()
-        return [(int(i), str(t)) for i, t in rows]
-    finally:
-        con.close()
-
-
-def store_vectors(kind: str, vecs: list[tuple[int, list[float]]]) -> None:
-    con = connect()
-    try:
-        con.executemany(
-            f"UPDATE {_TABLES[kind]} SET vec = ? WHERE id = ?",
-            [(pack(v), i) for i, v in vecs],
         )
         con.commit()
     finally:

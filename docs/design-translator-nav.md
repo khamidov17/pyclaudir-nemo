@@ -81,28 +81,28 @@ the conversation stays fully usable.
 **Privacy/security:** location frames only accepted on the authenticated ws;
 never journaled; Navigator state is in-memory per session and dies with it.
 
-## 3. Future features (designed, pick one later)
+## 3. Future features — ALL BUILT 2026-07-03 (except custom voice: ops-only)
 
-### Voice ledger
+### Voice ledger ✅ built — ledger.py + tests + harness phase 12
 "50 ming tushlikka ketdi" → `ledger` table in memory_v2.db
 (ts, amount, currency, category, note); `log_expense`/`log_habit` tools +
 TIER2 patterns; weekly spoken summary via the briefing; "how much did I spend
 on food this month" answered from SQL, not the LLM's imagination.
 
-### Multi-speaker memory
+### Multi-speaker memory ✅ built — speaker_gate guests + enroll_speaker + attribution + harness phase 13
 `voiceprints.json` grows named profiles (enroll: "Nemo, remember Aziz's
 voice"). speaker_gate returns (verdict, name). Episodes gain a `speaker`
 column; meeting transcripts + ambient turns attributed by name; recall can
 answer "what did Aziz say about the trip". Strangers still store nothing.
 Protected tools stay OWNER-only — named guests get attribution, not access.
 
-### Learning coach
+### Learning coach ✅ built — study_coach.py (SM-2) + study watcher + tests
 `study_items` table (front, back, due_ts, ease) — SM-2 spaced repetition.
 Feeds from the study-assistant skill's flashcards + explicit "quiz me on
 this". A proactive watcher offers due cards at good moments (interrupt
 policy applies; low severity). Progress stats in the weekly briefing.
 
-### Custom voice
+### Custom voice ⏳ ops-only — OMNI_TTS_VOICE on the ava-gpu TTS sidecar (with M4)
 Waits for M4 self-hosting: clone/pick a voice for the TTS side of the
 omni gateway (`OMNI_TTS_VOICE`), fine-tuned on a chosen reference. Zero
 server-code change — it's a TTS-sidecar model swap on ava-gpu.

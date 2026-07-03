@@ -19,7 +19,7 @@ def _data_dir(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_context_for_tags_by_kind(monkeypatch):
     memory_store.add_fact("Avazbek likes dark roast")
-    row = memory_store.searchable_rows(("fact",))[0]
+    row = memory_search.searchable_rows(("fact",))[0]
     monkeypatch.setattr(memory_search, "search", lambda q, limit=4: [row])
     out = await recall.context_for("what coffee do I like?")
     assert out == ["[known] Avazbek likes dark roast"]

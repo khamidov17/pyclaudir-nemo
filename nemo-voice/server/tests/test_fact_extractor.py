@@ -53,7 +53,7 @@ async def test_extracts_facts_procedures_followups(monkeypatch):
 async def test_duplicate_fact_skipped(monkeypatch):
     _seed_turns()
     fid = memory_store.add_fact("Avazbek moved to Tashkent")
-    row = memory_store.searchable_rows(("fact",))[0]
+    row = memory_search.searchable_rows(("fact",))[0]
     monkeypatch.setattr(
         memory_search, "find_similar_facts", lambda t, k=1: [(0.95, row)]
     )
@@ -70,7 +70,7 @@ async def test_duplicate_fact_skipped(monkeypatch):
 async def test_related_fact_supersedes(monkeypatch):
     _seed_turns()
     old = memory_store.add_fact("Avazbek lives in Samarkand")
-    row = memory_store.searchable_rows(("fact",))[0]
+    row = memory_search.searchable_rows(("fact",))[0]
     monkeypatch.setattr(
         memory_search, "find_similar_facts", lambda t, k=1: [(0.80, row)]
     )

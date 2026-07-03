@@ -49,7 +49,7 @@ def _translator_pump(monkeypatch, tmp_path):
     from pump_tools import _SessionCtx
 
     injected, updates = [], []
-    monkeypatch.setattr(voice_history, "add", lambda r, t: None)
+    monkeypatch.setattr(voice_history, "add", lambda r, t, speaker="": None)
     monkeypatch.setattr(pump_class.interruption_log, "on_user_speech", lambda: None)
 
     class FakeLink:

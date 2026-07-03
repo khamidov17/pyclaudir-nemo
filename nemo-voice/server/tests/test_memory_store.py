@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import memory_search
 import memory_store
 
 
@@ -42,7 +43,7 @@ def test_superseded_fact_excluded_from_search_rows():
     old = memory_store.add_fact("old fact about coffee")
     new = memory_store.add_fact("new fact about coffee")
     memory_store.supersede_fact(old, new)
-    rows = memory_store.searchable_rows(("fact",))
+    rows = memory_search.searchable_rows(("fact",))
     assert [r.id for r in rows] == [new]
 
 
@@ -57,15 +58,15 @@ def test_followup_lifecycle():
 
 def test_vector_roundtrip():
     fid = memory_store.add_fact("vec test")
-    assert memory_store.unembedded("fact") == [(fid, "vec test")]
-    memory_store.store_vectors("fact", [(fid, [0.1, 0.2, 0.3])])
-    assert memory_store.unembedded("fact") == []
-    (row,) = memory_store.searchable_rows(("fact",))
+    assert memory_search.unembedded("fact") == [(fid, "vec test")]
+    memory_search.store_vectors("fact", [(fid, [0.1, 0.2, 0.3])])
+    assert memory_search.unembedded("fact") == []
+    (row,) = memory_search.searchable_rows(("fact",))
     assert row.vec is not None and len(row.vec) == 3
     assert row.vec[1] == pytest.approx(0.2)
 
 
 def test_procedures_searchable():
     memory_store.add_procedure("morning", "briefing in Uzbek")
-    rows = memory_store.searchable_rows(("procedure",))
+    rows = memory_search.searchable_rows(("procedure",))
     assert rows[0].text == "briefing in Uzbek"

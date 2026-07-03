@@ -106,6 +106,22 @@ FUNCTIONS: list[dict] = [
         "description": "Get Avazbek's current local date and time.",
         "parameters": {"type": "object", "properties": {}},
     },
+    {
+        "name": "enroll_speaker",
+        "description": (
+            "Remember someone's voice by name ('remember Aziz's voice'). After "
+            "calling this, ask that person to say a full sentence — their NEXT "
+            "utterance becomes their voiceprint, so future speech is attributed "
+            "to them in memory. Attribution only — never gives them access."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The person's name."}
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 TOOL_NAMES = {f["name"] for f in FUNCTIONS}
@@ -122,6 +138,10 @@ async def dispatch(name: str, args: dict) -> str:
         return await _send_telegram(args.get("text", ""))
     if name == "get_time":
         return _get_time()
+    if name == "enroll_speaker":
+        # Session-scoped arming happens in the pump (it owns SpeakerState);
+        # reaching here means the pump interception was bypassed somehow.
+        return json.dumps({"error": "enrollment must run inside a voice session"})
     return json.dumps({"error": f"unknown function {name}"})
 
 

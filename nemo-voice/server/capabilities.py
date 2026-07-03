@@ -16,11 +16,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import assistant_tools
+import ledger
 import memory_tools
 import messages
 import navigation
 import phone_tools
 import reminders
+import study_coach
 import skills
 import vision
 import web_search
@@ -89,6 +91,18 @@ _VISION = (
     "use_screen=true) and you tell him what you see. Describe a person if asked, but never claim "
     "to know a stranger's real identity. To save something for later, `look` then `remember` what "
     "you found.\n"
+)
+_LEDGER = (
+    "LEDGER. The moment he mentions spending money ('50 ming tushlikka ketdi') call "
+    "`log_expense`; a habit event (gym, run, slept N hours) → `log_habit`. Silent "
+    "bookkeeping — a two-word acknowledgment at most. For ANY question about his "
+    "spending or habits, call `ledger_summary` — never guess numbers.\n"
+)
+_STUDY = (
+    "STUDY COACH. 'Quiz me on this: X means Y' → `add_flashcard`. When he asks to be "
+    "quizzed (or accepts your nudge), call `quiz_me`, ask him the question, judge his "
+    "spoken answer against the correct one, tell him, then `grade_card` (5 perfect, "
+    "3 hesitant, 0 blank) and offer the next card.\n"
 )
 _NAVIGATION = (
     "NAVIGATION. When he asks you to direct/navigate/guide him somewhere, call "
@@ -197,6 +211,20 @@ REGISTRY: tuple[Capability, ...] = (
         tool_names=frozenset(memory_tools.TOOL_NAMES),
         dispatch=_async_only(memory_tools),
         context_fetcher=memory_tools.shared_memory_context,
+    ),
+    Capability(
+        id="ledger",
+        prompt_fragment=_LEDGER,
+        functions=tuple(ledger.FUNCTIONS),
+        tool_names=frozenset(ledger.TOOL_NAMES),
+        dispatch=_async_only(ledger),
+    ),
+    Capability(
+        id="study",
+        prompt_fragment=_STUDY,
+        functions=tuple(study_coach.FUNCTIONS),
+        tool_names=frozenset(study_coach.TOOL_NAMES),
+        dispatch=_async_only(study_coach),
     ),
     Capability(
         id="navigation",

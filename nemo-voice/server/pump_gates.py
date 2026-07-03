@@ -70,7 +70,7 @@ class _GatesMixin:
         await self.link.send({"type": "response.cancel"})
         await self._send({"type": "interrupted", "data": "ambient_suppress"})
         if self._speaker.allow_sensitive():
-            voice_history.add("user", transcript)
+            voice_history.add("user", transcript, speaker=self._speaker.name or "")
         else:
             LOG.info("ambient: unverified speech dropped (not journaled)")
         return True
@@ -131,20 +131,42 @@ class _GatesMixin:
         return True
 
     async def _verify_speaker(self) -> None:
-        """Verify the turn's voice against the owner's voiceprint. Runs in a
-        worker thread while Qwen is already generating — no added latency.
+        """Identify the turn's voice (owner / enrolled guest / stranger). Runs
+        in a worker thread while Qwen is already generating — no added latency.
         Text injects (no audio) come from the authenticated app: keep verdict."""
         pcm = self._speaker.take_turn_audio()
         if not speaker_gate.enabled() or not pcm:
             return
-        verdict = await asyncio.to_thread(speaker_gate.verify, pcm)
-        self._speaker.record(verdict)
-        LOG.info("speaker gate: %s", verdict.value)
+        if await self._maybe_enroll_guest(pcm):
+            return
+        verdict, name = await asyncio.to_thread(speaker_gate.identify, pcm)
+        self._speaker.record(verdict, name)
+        LOG.info("speaker gate: %s (%s)", verdict.value, name or "?")
         if verdict is speaker_gate.Verdict.UNSURE and not (
             self._speaker.session_verified or self._speaker.biometric_pending
         ):
             self._speaker.biometric_pending = True
             self.link.spawn_bg(self._biometric_check)
+
+    async def _maybe_enroll_guest(self, pcm: bytes) -> bool:
+        """An armed enrollment ('remember Aziz's voice') captures the next
+        NON-owner turn as that person's voiceprint."""
+        name = self._speaker.pending_enroll
+        if not name:
+            return False
+        verdict, _ = await asyncio.to_thread(speaker_gate.identify, pcm)
+        if verdict is speaker_gate.Verdict.OWNER:
+            self._speaker.record(verdict, "Avazbek")
+            return False  # owner still talking — keep waiting for the guest
+        self._speaker.pending_enroll = None
+        ok = await asyncio.to_thread(speaker_gate.enroll_guest, name, pcm)
+        self._speaker.record(verdict, name if ok else None)
+        LOG.info("guest enrollment %s: %s", "done" if ok else "failed", name)
+        await self.link.inject_text(
+            f"[Voice enrollment {'succeeded' if ok else 'failed — audio too short'} "
+            f"for {name}. Tell Avazbek briefly.]"
+        )
+        return True
 
     async def _biometric_check(self) -> None:
         """Voice was borderline (sick/noisy) — second factor via the phone's

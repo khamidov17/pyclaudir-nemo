@@ -44,7 +44,9 @@ def _ambient_pump(monkeypatch, tmp_path):
     from pump_tools import _SessionCtx
 
     taps = {"link": [], "journaled": []}
-    monkeypatch.setattr(voice_history, "add", lambda r, t: taps["journaled"].append(t))
+    monkeypatch.setattr(
+        voice_history, "add", lambda r, t, speaker="": taps["journaled"].append(t)
+    )
     monkeypatch.setattr(pump_class.interruption_log, "on_user_speech", lambda: None)
 
     class FakeLink:

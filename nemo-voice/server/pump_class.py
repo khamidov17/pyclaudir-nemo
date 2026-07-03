@@ -100,7 +100,7 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
         await asyncio.to_thread(interruption_log.on_user_speech)
         if await self._ambient_gate(transcript):
             return
-        voice_history.add("user", transcript)
+        voice_history.add("user", transcript, speaker=self._speaker.name or "")
         if voice_intent.is_deactivate_intent(transcript):
             LOG.info("deactivate on request — session to sleep")
             await self.link.send({"type": "response.cancel"})
@@ -255,6 +255,25 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
             await self._send({"type": "nav_start"})
         elif name == "stop_navigation":
             await self._send({"type": "nav_stop"})
+        elif name == "enroll_speaker":
+            # Session-scoped: arm SpeakerState so the next non-owner utterance
+            # becomes that person's voiceprint. Never reaches voice_brain.
+            try:
+                who = json.loads(item.get("arguments") or "{}").get("name", "")
+            except json.JSONDecodeError:
+                who = ""
+            who = str(who).strip()[:40]
+            self._speaker.pending_enroll = who or None
+            await _tool_output(
+                self.link,
+                item.get("call_id", ""),
+                json.dumps(
+                    {"status": f"listening — ask {who} to say a full sentence"}
+                    if who
+                    else {"error": "no name given"}
+                ),
+            )
+            return
         # FLOW-01: phone actions take up to 20s — extend watchdog past action_bridge timeout.
         if name and name in _PHONE_ACTION_TOOL_NAMES:
             self._arm_turn_timer(idle_sec=self._ACTION_TURN_IDLE_SEC)
