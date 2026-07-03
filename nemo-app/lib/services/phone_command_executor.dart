@@ -106,6 +106,18 @@ class PhoneCommandExecutor {
         return _setTimer(parts);
       case 'tg_msg':
         return _telegramMessage(arg);
+      case 'biometric_check':
+        // Voice-lock second factor: the server heard a borderline voice
+        // (sick/hoarse/noisy) and asks the phone to confirm identity via the
+        // system biometric cascade (face → fingerprint → PIN). Fails closed.
+        if (context == null) {
+          return const ActionOutcome.fail('no UI context for biometric prompt');
+        }
+        final verified = await BiometricService.authenticate(
+            context, 'Nemo: confirm it\'s you (voice sounded different)');
+        return verified
+            ? const ActionOutcome.success('identity confirmed')
+            : const ActionOutcome.fail('biometric check failed or dismissed');
       default:
         return ActionOutcome.fail('unknown command: $verb');
     }

@@ -16,6 +16,7 @@ import os
 import re
 from enum import Enum
 
+import capabilities
 import voice_intent
 
 _TIERS_ENABLED = os.environ.get("VOICE_TIERS", "0").strip() == "1"
@@ -42,6 +43,10 @@ def route_tier(text: str) -> RouteDecision:
     if voice_intent.is_code_intent(text):
         return RouteDecision.TIER2_ENGINE
     if voice_intent.is_record_recall_intent(text):
+        return RouteDecision.TIER2_ENGINE
+    # Heavy/rare capabilities declare their own engine-tier patterns in the
+    # registry instead of growing this file.
+    if capabilities.tier2_matches(text):
         return RouteDecision.TIER2_ENGINE
     if _TIERS_ENABLED and any(re.search(p, text.lower()) for p in _TIER1_PATTERNS):
         return RouteDecision.TIER1_FAST

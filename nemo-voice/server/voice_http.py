@@ -262,3 +262,9 @@ async def serve(port: int, ssl_ctx=None, backend_name: str = "unknown") -> None:
     site = web.TCPSite(runner, "0.0.0.0", port, ssl_context=ssl_ctx)
     await site.start()
     LOG.info("Voice HTTP%s server on port %d", "S" if ssl_ctx else "", port)
+    import proactive_loop
+
+    if proactive_loop.enabled():
+        t = asyncio.create_task(proactive_loop.run())
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)

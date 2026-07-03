@@ -10,23 +10,26 @@ import json
 import logging
 import time
 
+import interruption_log
 import voice_history
 import voice_intent
+from pump_gates import _GatesMixin
+from pump_intents import _IntentsMixin
 from qwen_link import QwenLink
 from voice_metrics import METRICS, record_ttfsw_ms
 
 from pump_tools import (
     _PHONE_ACTION_TOOL_NAMES,
+    _PROTECTED_TOOLS,
     _SessionCtx,
     _handle_tool,
-    _run_bg_tool,
     _track_usage,
 )
 
 LOG = logging.getLogger("nemo.qwen_pump")
 
 
-class _QwenPump:
+class _QwenPump(_GatesMixin, _IntentsMixin):
     """Qwen → App: translate Qwen realtime events into our app protocol."""
 
     _TURN_IDLE_SEC = 6.0
@@ -36,6 +39,8 @@ class _QwenPump:
         self.link = link
         self.client_ws = ctx.client_ws
         self.bridge = ctx.bridge
+        self._ctx = ctx
+        self._speaker = ctx.speaker
         self._orchestrator = orchestrator
         self.agent_started = False
         self._reply = ""
@@ -88,6 +93,12 @@ class _QwenPump:
 
     async def _on_user_transcript(self, transcript: str) -> None:
         LOG.info("user said: %r", transcript)
+        # Verify BEFORE journaling: in ambient mode a stranger's words in the
+        # room must never reach memory (privacy, not just tool safety).
+        await self._verify_speaker()
+        await asyncio.to_thread(interruption_log.on_user_speech)
+        if await self._ambient_gate(transcript):
+            return
         voice_history.add("user", transcript)
         if voice_intent.is_deactivate_intent(transcript):
             LOG.info("deactivate on request — session to sleep")
@@ -106,23 +117,6 @@ class _QwenPump:
         await self._send({"type": "user_transcript", "data": transcript})
         if self._orchestrator:
             await self._orchestrator.on_final_transcript(transcript)
-
-    def _arm_intents(self, transcript: str) -> None:
-        self._pending_code_intent = (
-            transcript if voice_intent.is_code_intent(transcript) else None
-        )
-        self._pending_search = (
-            transcript if voice_intent.is_search_intent(transcript) else None
-        )
-        self._pending_messages = voice_intent.is_messages_intent(transcript)
-        self._pending_vision = (
-            transcript if voice_intent.is_vision_intent(transcript) else None
-        )
-        if self._pending_vision:
-            self._pending_search = None
-        self._pending_recall = (
-            transcript if voice_intent.is_record_recall_intent(transcript) else None
-        )
 
     async def _send(self, msg: dict) -> None:
         async with self._send_lock:
@@ -212,45 +206,6 @@ class _QwenPump:
         self._reset_reply_sensitivity()
         self._run_recoveries()
 
-    def _run_recoveries(self) -> None:
-        orch = self._orchestrator
-        if self._pending_code_intent:
-            task, self._pending_code_intent = self._pending_code_intent, None
-            LOG.info("recovering missed code delegation")
-            self.link.spawn_bg(
-                lambda _t=task, _o=orch: voice_intent.recover_delegate(
-                    self.link, self.bridge, _t, _o
-                )
-            )
-        if self._pending_search:
-            query, self._pending_search = self._pending_search, None
-            LOG.info("recovering missed web_search: %r", query)
-            self.link.spawn_bg(
-                lambda: _run_bg_tool(
-                    self.link, self.bridge, "web_search", {"query": query}
-                )
-            )
-        if self._pending_messages:
-            self._pending_messages = False
-            LOG.info("fetching messages on explicit request")
-            self.link.spawn_bg(
-                lambda: _run_bg_tool(self.link, self.bridge, "read_messages", {})
-            )
-        if self._pending_vision:
-            q, self._pending_vision = self._pending_vision, None
-            LOG.info("recovering missed look: %r", q)
-            self.link.spawn_bg(
-                lambda: _run_bg_tool(self.link, self.bridge, "look", {"question": q})
-            )
-        if self._pending_recall:
-            task, self._pending_recall = self._pending_recall, None
-            LOG.info("recovering recording recall → engine: %r", task)
-            self.link.spawn_bg(
-                lambda _t=task, _o=orch: voice_intent.recover_delegate(
-                    self.link, self.bridge, _t, _o
-                )
-            )
-
     async def _barge_in(self) -> None:
         if not self.agent_started:
             return
@@ -270,25 +225,23 @@ class _QwenPump:
 
     async def _maybe_tool(self, ev: dict) -> None:
         item = ev.get("item", {})
-        if item.get("type") == "function_call":
-            name = item.get("name")
-            if name == "delegate_task":
-                self._pending_code_intent = None
-                self._pending_recall = None
-            elif name == "web_search":
-                self._pending_search = None
-            elif name == "look":
-                self._pending_vision = None
-            if self._orchestrator:
-                try:
-                    args = json.loads(item.get("arguments") or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                await self._orchestrator.on_tool_call(name or "", args)
-            # FLOW-01: phone actions take up to 20s — extend watchdog past action_bridge timeout.
-            if name and name in _PHONE_ACTION_TOOL_NAMES:
-                self._arm_turn_timer(idle_sec=self._ACTION_TURN_IDLE_SEC)
-            await _handle_tool(self.link, self.bridge, item, self._orchestrator)
+        if item.get("type") != "function_call":
+            return
+        name = item.get("name")
+        self._clear_pending_for(name)
+        if self._orchestrator:
+            try:
+                args = json.loads(item.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            await self._orchestrator.on_tool_call(name or "", args)
+        if name in _PROTECTED_TOOLS and not self._speaker.allow_sensitive():
+            await self._refuse_unverified(item)
+            return
+        # FLOW-01: phone actions take up to 20s — extend watchdog past action_bridge timeout.
+        if name and name in _PHONE_ACTION_TOOL_NAMES:
+            self._arm_turn_timer(idle_sec=self._ACTION_TURN_IDLE_SEC)
+        await _handle_tool(self.link, self.bridge, item, self._orchestrator)
 
     async def _done(self, ev: dict) -> None:
         await self._complete_turn()

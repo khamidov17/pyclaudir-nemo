@@ -11,6 +11,12 @@ import json
 import logging
 from dataclasses import dataclass
 
+import base64
+
+import fact_extractor
+import memory_migrate
+import memory_store
+import speaker_gate
 import voice_facts
 import voice_history
 from qwen_link import QwenLink
@@ -70,7 +76,24 @@ async def _seed_history(qwen) -> None:
 # ── client relay ──────────────────────────────────────────────────────────────
 
 
-async def _recv_client(client_ws, link: QwenLink, bridge) -> None:
+# Speaker-gate tee: cap the per-turn buffer at ~30s of 16k mono PCM so a
+# never-ending stream can't grow memory unbounded.
+_MAX_TEE_BYTES = 16000 * 2 * 30
+
+
+def _tee_speaker_audio(ctx, b64: str) -> None:
+    if ctx is None or not speaker_gate.enabled():
+        return
+    buf = ctx.speaker.pcm_buf
+    if len(buf) >= _MAX_TEE_BYTES:
+        return
+    try:
+        buf.extend(base64.b64decode(b64))
+    except (ValueError, TypeError):
+        pass
+
+
+async def _recv_client(client_ws, link: QwenLink, bridge, ctx=None) -> None:
     """App → Qwen: stream mic audio, resolve tool results, inject text."""
     async for raw in client_ws:
         try:
@@ -83,6 +106,7 @@ async def _recv_client(client_ws, link: QwenLink, bridge) -> None:
         elif msg_type == "audio":
             b64 = data.get("data", "")
             if b64:
+                _tee_speaker_audio(ctx, b64)
                 await link.send({"type": "input_audio_buffer.append", "audio": b64})
         elif msg_type == "inject":
             text = data.get("text", "")
@@ -122,6 +146,8 @@ async def _run_session_inner(
     """Inner body of run_qwen_session — called inside the websocket context."""
     from action_bridge import ActionBridge
 
+    if memory_store.memory_v2_enabled() and not memory_migrate.migrated():
+        await asyncio.to_thread(memory_migrate.migrate_legacy)
     await qwen.recv()  # session.created
     await qwen.send(json.dumps(cfg.session_config))
     LOG.info("Qwen realtime session open (model=%s, voice=%s)", cfg.model, cfg.voice)
@@ -131,7 +157,7 @@ async def _run_session_inner(
     link = QwenLink(qwen)
     orch = orchestrator_factory(link) if orchestrator_factory else None
     ctx = _SessionCtx(client_ws=client_ws, bridge=bridge)
-    to_qwen = asyncio.create_task(_recv_client(client_ws, link, bridge))
+    to_qwen = asyncio.create_task(_recv_client(client_ws, link, bridge, ctx))
     to_client = asyncio.create_task(_QwenPump(link, ctx, orch).run())
     try:
         await _run_tasks(to_qwen, to_client)
@@ -140,7 +166,10 @@ async def _run_session_inner(
         if orch is not None:
             orch.close()
         try:
-            await voice_facts.maybe_extract()
+            if memory_store.memory_v2_enabled():
+                await fact_extractor.maybe_extract()
+            else:
+                await voice_facts.maybe_extract()
         except Exception as exc:  # noqa: BLE001
             LOG.warning("fact extraction failed: %s", exc)
 

@@ -18,6 +18,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import memory_store
+
 LOG = logging.getLogger("nemo.voice_history")
 
 _DATA_DIR = Path(
@@ -49,6 +51,11 @@ def add(role: str, text: str) -> None:
     items = _load_recent()
     items.append({"role": role, "text": text[:300], "ts": time.time()})
     items = items[-_MAX_TURNS:]
+    if memory_store.memory_v2_enabled():
+        try:
+            memory_store.add_episode("voice", role, text)
+        except Exception as exc:  # noqa: BLE001 — v2 mirror must not break the turn
+            LOG.warning("episode mirror failed: %s", exc)
     try:
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
         _RECENT.write_text(json.dumps(items))

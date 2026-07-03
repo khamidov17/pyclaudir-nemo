@@ -16,9 +16,8 @@ import asyncio
 import json
 import logging
 import os
-import sqlite3
-from pathlib import Path
 
+import capabilities
 import session_registry
 from qwen_link import QwenLink
 from semantic_router import RouteDecision, route_tier
@@ -36,40 +35,6 @@ _BARGE_WINDOW_SEC = 10.0
 
 # Max stashed chunks before we drop the oldest on overflow.
 _STASH_MAX_CHUNKS = 3
-
-# Shared memory DB — semantic_memory.py writes to memory_index.db, not pyclaudir.db.
-_DATA_DIR: Path = (
-    Path(os.environ.get("NEMO_VOICE_DATA_DIR", ""))
-    if os.environ.get("NEMO_VOICE_DATA_DIR")
-    else Path(__file__).resolve().parents[2] / "data"
-)
-_MEMORY_DB: Path = _DATA_DIR / "memory_index.db"
-
-
-async def _search_shared_memory(query: str, top_k: int = 3) -> list[str]:
-    """Keyword search against memory_index.db — same file semantic_memory.py writes."""
-
-    def _query() -> list[str]:
-        if not _MEMORY_DB.exists():
-            return []
-        try:
-            words = query.lower().split()[:6]
-            con = sqlite3.connect(str(_MEMORY_DB), timeout=1.0)
-            rows = con.execute(
-                "SELECT text FROM chunks WHERE source='memory' "
-                "ORDER BY rowid DESC LIMIT 50"
-            ).fetchall()
-            con.close()
-            scored = [
-                (sum(1 for w in words if w in t.lower()), t[:200]) for (t,) in rows
-            ]
-            scored = [(s, t) for s, t in scored if s > 0]
-            scored.sort(key=lambda x: -x[0])
-            return [t for _, t in scored[:top_k]]
-        except Exception:  # noqa: BLE001 — best-effort retrieval, never crash
-            return []
-
-    return await asyncio.to_thread(_query)
 
 
 def _text_item(chunk: str) -> dict:
@@ -117,8 +82,10 @@ class Orchestrator:
         import haiku_reasoner
 
         try:
+            # Every capability with a context fetcher contributes (shared
+            # memory today; reminders/messages can register theirs later).
             memories = await asyncio.wait_for(
-                _search_shared_memory(transcript, top_k=3), timeout=0.5
+                capabilities.context_for(transcript), timeout=0.5
             )
         except asyncio.TimeoutError:
             memories = []

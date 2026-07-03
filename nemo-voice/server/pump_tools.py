@@ -14,6 +14,7 @@ import os
 import phone_tools as _phone_tools
 import qwen_usage
 import reminders
+import speaker_gate
 import voice_brain
 from error_journal import log_error, log_warn
 from qwen_link import QwenLink
@@ -25,11 +26,17 @@ _BG_TOOLS: frozenset[str] = frozenset({"web_search", "look"})
 _SENSITIVE_TOOLS: frozenset[str] = frozenset({"read_messages"})
 # Phone-action tools that block synchronously on the phone — need extended watchdog.
 _PHONE_ACTION_TOOL_NAMES: frozenset[str] = frozenset(_phone_tools.PHONE_TOOL_NAMES)
+# Owner-only when the speaker lock is on: private data, phone control, memory.
+_PROTECTED_TOOLS: frozenset[str] = (
+    _SENSITIVE_TOOLS
+    | _PHONE_ACTION_TOOL_NAMES
+    | frozenset({"remember", "recall", "search_chat", "send_telegram", "delegate_task"})
+)
 
 
 # ── SessionCtx ────────────────────────────────────────────────────────────────
 
-from dataclasses import dataclass  # noqa: E402
+from dataclasses import dataclass, field  # noqa: E402
 
 
 @dataclass
@@ -38,6 +45,10 @@ class _SessionCtx:
 
     client_ws: object
     bridge: object
+    speaker: speaker_gate.SpeakerState = field(
+        default_factory=speaker_gate.SpeakerState
+    )
+    ambient_on: bool = False
 
 
 # ── thin helpers ──────────────────────────────────────────────────────────────
@@ -86,7 +97,10 @@ async def _run_bg_tool(link: QwenLink, bridge, name: str, args: dict) -> None:
         )
     delivered = await link.inject_text_when_idle(text, sensitive=sensitive)
     if not delivered and not sensitive:
-        log_warn(f"voice/tool/{name}", "session gone before result could be spoken — fell back to phone push")
+        log_warn(
+            f"voice/tool/{name}",
+            "session gone before result could be spoken — fell back to phone push",
+        )
         _deliver_via_engine(name, args, content)
 
 

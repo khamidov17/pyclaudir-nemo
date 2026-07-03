@@ -37,6 +37,12 @@ skills/
 | [reminder-format](reminder-format/) | reference | Three-rule format for the `set_reminder` text argument — `<THIS IS A REMINDER>` opener, `Goal:` line, numbered steps. Read before creating or editing any reminder so fired `<reminder>` envelopes are self-explanatory. |
 | [trends](trends/) | invoked | On-demand global digest — tech, startup, AI, finance, future, economy. Sweeps X / Reddit / HN / Business Insider / LinkedIn / big-tech earnings / AI-lab blogs. Triggered by a reminder containing `<skill name="trends">run</skill>`. |
 | [trends-uzbekistan](trends-uzbekistan/) | invoked | On-demand Uzbek-scene digest — local startups, VC, fintech, gov tech, hackathons. Sweeps Uzbek Telegram channels (uzbekvc / uzbekfintech / uzbbanking / skartariss / stanbsse) and spot.uz. Triggered by a reminder containing `<skill name="trends-uzbekistan">run</skill>`. |
+| [task-triage](task-triage/) | reference | Router for voice-delegated tasks (`delegate_task`). Read FIRST on any voice-relayed background task: maps the request to the right playbook and sets the response contract — 1–3 speakable sentences for Nemo to say, full artifact to Telegram. |
+| [study-assistant](study-assistant/) | reference | Student playbook — explain concepts, summarize lectures/PDFs, study plans, flashcards, assignment scaffolding. |
+| [research-brief](research-brief/) | reference | General deep-research playbook — multi-source sweep, verify load-bearing facts, decision-ready brief with sources. |
+| [writing-desk](writing-desk/) | reference | Drafting playbook — emails, essays, reports, proposals, posts, CVs in EN/UZ/RU; tone rules and the two-version rule for high-stakes messages. |
+| [business-ops](business-ops/) | reference | Business playbook — meeting prep briefs, competitor/market scans, pricing and vendor comparisons, client follow-ups, invoice/proposal outlines. |
+| [daily-planner](daily-planner/) | reference | Everyday-life playbook — trips, scheduling and errands, shopping price checks, gifts, event planning, with live prices and local (uzum.uz/asaxiy.uz) sources. |
 
 ## Skill modes
 
