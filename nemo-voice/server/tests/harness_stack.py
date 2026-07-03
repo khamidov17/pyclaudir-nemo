@@ -57,35 +57,63 @@ class ScriptedBackend:
 NAV_PORT = 8791
 
 
-async def run_fake_nav_api():
-    """Offline Nominatim+OSRM stand-in: geocodes anything to (0.02, 0.0) and
-    returns a two-step route matching the unit-test geometry."""
+async def _fake_search(_req):
     from aiohttp import web
 
-    async def search(_req):
-        return web.json_response([{"lat": "41.02", "lon": "69.0"}])
+    return web.json_response([{"lat": "41.02", "lon": "69.0"}])
 
-    async def route(_req):
-        steps = [
-            {
-                "maneuver": {
-                    "type": "turn",
-                    "modifier": "right",
-                    "location": [69.0, 41.01],
-                },
-                "name": "Amir Temur",
+
+async def _fake_route(_req):
+    from aiohttp import web
+
+    steps = [
+        {
+            "maneuver": {
+                "type": "turn",
+                "modifier": "right",
+                "location": [69.0, 41.01],
             },
-            {"maneuver": {"type": "arrive", "location": [69.0, 41.02]}, "name": ""},
-        ]
-        return web.json_response({"routes": [{"legs": [{"steps": steps}]}]})
+            "name": "Amir Temur",
+        },
+        {"maneuver": {"type": "arrive", "location": [69.0, 41.02]}, "name": ""},
+    ]
+    return web.json_response({"routes": [{"legs": [{"steps": steps}]}]})
+
+
+async def _fake_vl(req):
+    """Fake Qwen-VL: branch on the prompt so scan gets receipt JSON and
+    narration gets a scene description."""
+    from aiohttp import web
+
+    prompt = json.dumps(await req.json()).lower()
+    if "visually-impaired" in prompt:
+        content = "A doorway on your right, two steps down."
+    elif "receipt" in prompt or '"kind"' in prompt:
+        content = json.dumps(
+            {
+                "kind": "receipt",
+                "vendor": "Korzinka",
+                "total": 85000,
+                "currency": "UZS",
+                "category": "food",
+            }
+        )
+    else:
+        content = "I see a document."
+    return web.json_response({"choices": [{"message": {"content": content}}]})
+
+
+async def run_fake_nav_api():
+    """Offline Nominatim + OSRM + Qwen-VL stand-in on one port."""
+    from aiohttp import web
 
     app = web.Application()
-    app.router.add_get("/search", search)
-    app.router.add_get("/route/v1/driving/{coords}", route)
+    app.router.add_get("/search", _fake_search)
+    app.router.add_get("/route/v1/driving/{coords}", _fake_route)
+    app.router.add_post("/vl", _fake_vl)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", NAV_PORT)
-    await site.start()
+    await web.TCPSite(runner, "127.0.0.1", NAV_PORT).start()
     return runner
 
 
@@ -125,6 +153,8 @@ def start_voice_server(data_dir: str) -> subprocess.Popen:
         "VOICE_SPEAKER_LOCK": "1",
         "NAV_GEOCODE_URL": f"http://127.0.0.1:{NAV_PORT}/search",
         "OSRM_URL": f"http://127.0.0.1:{NAV_PORT}",
+        "QWEN_VL_URL": f"http://127.0.0.1:{NAV_PORT}/vl",
+        "NARRATE_MIN_INTERVAL_S": "0",
         "SPEAKER_EMBEDDER": "energy",
         "VOICE_PORT": str(VOICE_PORT),
         "VOICE_HTTP_PORT": str(VOICE_PORT + 1),
@@ -215,6 +245,11 @@ class PhoneClient:
 
     async def send_location(self, lat: float, lon: float) -> None:
         await self.ws.send(json.dumps({"type": "location", "lat": lat, "lon": lon}))
+
+    async def send_narration_frame(self, image_b64: str = TINY_PNG) -> None:
+        await self.ws.send(
+            json.dumps({"type": "narration_frame", "image_b64": image_b64})
+        )
 
     async def speak_turn(self, amp: int = 3000) -> None:
         """Stream one spoken 'utterance': ~300ms voice then ~900ms silence.

@@ -129,10 +129,17 @@ def _study_watcher() -> tuple:
     return ("study", study_coach.poll_study, study_coach.ack_study)
 
 
+def _health_watcher() -> tuple:
+    import health
+
+    return ("health", health.poll_health, health.ack_health)
+
+
 WATCHERS = (
     ("followup", poll_followups, ack_followup),
     ("infra", poll_infra, ack_infra),
     _study_watcher(),
+    _health_watcher(),
 )
 
 

@@ -20,6 +20,7 @@ import phone_tools
 import reminders
 import skills
 import study_coach
+import vision_scan
 import vision
 import voice_brain
 import web_search
@@ -54,6 +55,7 @@ def test_functions_cover_every_module() -> None:
         | reminders.TOOL_NAMES
         | skills.TOOL_NAMES
         | vision.TOOL_NAMES
+        | vision_scan.TOOL_NAMES
         | web_search.TOOL_NAMES
         | assistant_tools.TOOL_NAMES
     )

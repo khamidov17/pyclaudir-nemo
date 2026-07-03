@@ -203,6 +203,22 @@ def _tool_habit(args: dict) -> dict:
     return {"status": "logged"}
 
 
+def recent_habits(name: str, days: int) -> list[tuple[str, float]]:
+    """(ts, amount) for a habit within `days`, newest first — the health
+    watcher's read side. Empty when the ledger has no such rows yet."""
+    since = (_now_local() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+    con = _connect()
+    try:
+        rows = con.execute(
+            "SELECT ts, amount FROM ledger WHERE kind='habit' AND category=?"
+            " AND ts >= ? ORDER BY ts DESC",
+            (name.lower(), since),
+        ).fetchall()
+        return [(str(t), float(a)) for t, a in rows]
+    finally:
+        con.close()
+
+
 async def dispatch(name: str, args: dict) -> str:
     if name == "log_expense":
         return json.dumps(_tool_expense(args))

@@ -16,6 +16,7 @@ import base64
 import fact_extractor
 import memory_migrate
 import memory_store
+import narration
 import navigation
 import speaker_gate
 import voice_facts
@@ -113,6 +114,26 @@ async def _on_location_frame(link: QwenLink, data: dict) -> None:
         link.spawn_bg(lambda _p=prompt: link.inject_text_when_idle(_p))
 
 
+def _on_narration_frame(link: QwenLink, ctx, data: dict) -> None:
+    """Camera frame during scene-narration mode → a short spoken description.
+    Runs the VL call + inject in the background so the mic relay never stalls;
+    frames are used in-memory only, never journaled."""
+    if ctx is None or not getattr(ctx, "narrating", False):
+        return
+    image_b64 = data.get("image_b64") or data.get("imageB64")
+    if not image_b64:
+        return
+
+    async def _describe() -> None:
+        desc = await asyncio.to_thread(narration.describe_frame, image_b64)
+        if desc:
+            await link.inject_text_when_idle(
+                f"[Scene narration — say this to Avazbek, nothing else: {desc}]"
+            )
+
+    link.spawn_bg(_describe)
+
+
 async def _recv_client(client_ws, link: QwenLink, bridge, ctx=None) -> None:
     """App → Qwen: stream mic audio, resolve tool results, inject text."""
     async for raw in client_ws:
@@ -130,6 +151,8 @@ async def _recv_client(client_ws, link: QwenLink, bridge, ctx=None) -> None:
                 await link.send({"type": "input_audio_buffer.append", "audio": b64})
         elif msg_type == "location":
             await _on_location_frame(link, data)
+        elif msg_type == "narration_frame":
+            _on_narration_frame(link, ctx, data)
         elif msg_type == "inject":
             text = data.get("text", "")
             if text:

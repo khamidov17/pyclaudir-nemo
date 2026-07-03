@@ -65,6 +65,6 @@ def test_nudge_thresholds_and_throttle():
     for i in range(5):
         study_coach.add_card(f"f{i}", f"b{i}")
     events = study_coach.poll_study()
-    assert len(events) == 1 and events[0].severity == "low"
+    assert len(events) == 1 and events[0].severity == "normal"
     study_coach.ack_study(events[0])
     assert study_coach.poll_study() == []  # throttled after the ack

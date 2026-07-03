@@ -98,6 +98,8 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
         # room must never reach memory (privacy, not just tool safety).
         await self._verify_speaker()
         await asyncio.to_thread(interruption_log.on_user_speech)
+        await self._check_media_modes(transcript)
+        await self._emit_subtitle("you", transcript)
         if await self._ambient_gate(transcript):
             return
         voice_history.add("user", transcript, speaker=self._speaker.name or "")
@@ -203,6 +205,7 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
             if self._orchestrator:
                 await self._orchestrator.on_agent_speaking(False)
         if self._reply.strip():
+            await self._emit_subtitle("nemo", self._reply)
             if self._reply_is_sensitive():
                 LOG.info("turn: sensitive reply — not journaled")
             else:

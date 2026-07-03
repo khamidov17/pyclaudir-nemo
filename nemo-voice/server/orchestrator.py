@@ -120,10 +120,15 @@ class Orchestrator:
 
         Drop stale chunks (topic changed) or park on active barge-in.
         Otherwise inject into the idle Qwen session so Nemo speaks it.
+
+        rev < 0 marks a PROACTIVE chunk (reminder / watcher nudge) — not tied to
+        a conversation snapshot, so it is never stale (the rev counter climbs
+        with every turn; a rev-0 proactive event would be dropped in any long
+        session otherwise).
         """
         if not _WEAVE_IN:
             return
-        if rev < self.snapshot.rev:
+        if rev >= 0 and rev < self.snapshot.rev:
             LOG.debug(
                 "orchestrator: dropping stale chunk (rev=%d < snap=%d)",
                 rev,
@@ -151,7 +156,7 @@ class Orchestrator:
     async def _flush_stash(self) -> None:
         """After barge-in goes idle: replay stashed chunks if rev still matches."""
         cur_rev = self.snapshot.rev
-        to_inject = [(c, r) for c, r in self._stash if r >= cur_rev]
+        to_inject = [(c, r) for c, r in self._stash if r < 0 or r >= cur_rev]
         self._stash.clear()
         if not to_inject:
             LOG.debug("orchestrator: stash discarded (rev moved on)")

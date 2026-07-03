@@ -23,6 +23,7 @@ import navigation
 import phone_tools
 import reminders
 import study_coach
+import vision_scan
 import skills
 import vision
 import web_search
@@ -89,8 +90,15 @@ _VISION = (
     "YOU CAN SEE. When he asks you to look at something — 'what is this?', 'translate this', "
     "'read this label', 'who is this?' — call `look`: it snaps his camera (or his screen with "
     "use_screen=true) and you tell him what you see. Describe a person if asked, but never claim "
-    "to know a stranger's real identity. To save something for later, `look` then `remember` what "
-    "you found.\n"
+    "to know a stranger's real identity. Have a real opinion when he asks ('does this match?', "
+    "'how do I look?') — and read practical bits off labels (wash temperature, ingredients). To "
+    "save something for later, `look` then `remember` what you found.\n"
+)
+_SCAN = (
+    "SCANNING DOCUMENTS. When he points the camera at a document — 'scan this receipt', 'save "
+    "this card', 'read this form' — call `scan`. A receipt gets logged to his expenses, a "
+    "business card is saved as a contact, a form is read back. Just confirm what you did in a "
+    "few words.\n"
 )
 _LEDGER = (
     "LEDGER. The moment he mentions spending money ('50 ming tushlikka ketdi') call "
@@ -178,6 +186,13 @@ REGISTRY: tuple[Capability, ...] = (
         functions=tuple(vision.FUNCTIONS),
         tool_names=frozenset(vision.TOOL_NAMES),
         dispatch=_bridged(vision),
+    ),
+    Capability(
+        id="scan",
+        prompt_fragment=_SCAN,
+        functions=tuple(vision_scan.FUNCTIONS),
+        tool_names=frozenset(vision_scan.TOOL_NAMES),
+        dispatch=_bridged(vision_scan),
     ),
     Capability(id="recording", prompt_fragment=_RECORDING),
     Capability(id="privacy", prompt_fragment=_PRIVACY),

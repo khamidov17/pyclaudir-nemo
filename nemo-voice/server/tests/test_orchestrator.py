@@ -120,6 +120,28 @@ async def test_background_chunk_dropped_if_stale() -> None:
 
 
 @pytest.mark.asyncio
+async def test_proactive_chunk_survives_advanced_rev() -> None:
+    """rev=-1 (proactive reminder/nudge) is never dropped as stale, even after
+    the snapshot rev has climbed with many turns."""
+    with patch.dict(os.environ, {"VOICE_WEAVE_IN": "1"}):
+        import importlib
+        import orchestrator as orch_mod
+
+        importlib.reload(orch_mod)
+
+        link = _make_link()
+        orch = orch_mod.Orchestrator(
+            link=link,
+            session_id="aaaaaaaa-0000-4000-8000-00000000000a",
+        )
+        for _ in range(5):
+            orch.snapshot.bump()  # session has been going a while
+        await orch.on_background_chunk("[proactive] drink water", True, rev=-1)
+        link.inject_text_when_idle.assert_awaited()
+        orch.close()
+
+
+@pytest.mark.asyncio
 async def test_background_chunk_dropped_if_sensitive() -> None:
     with patch.dict(os.environ, {"VOICE_WEAVE_IN": "1"}):
         import importlib

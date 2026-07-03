@@ -14,7 +14,9 @@ import logging
 from typing import Any
 
 import ambient
+import narration
 import speaker_gate
+import subtitles
 import translator
 import voice_brain
 import voice_history
@@ -29,6 +31,7 @@ class _GatesMixin:
     bridge: Any
     _ctx: Any
     _speaker: Any
+    _reply: str
 
     async def _send(self, msg: dict) -> None: ...  # implemented by host
 
@@ -105,6 +108,26 @@ class _GatesMixin:
             "[Mode change: interpreting is over — confirm briefly, back "
             "to normal assistant.]"
         )
+
+    async def _check_media_modes(self, transcript: str) -> None:
+        """Flip scene-narration / subtitles modes on spoken toggles. Does not
+        suppress the turn — the model still confirms conversationally."""
+        ctx = self._ctx
+        if not ctx.narrating and narration.on_intent(transcript):
+            ctx.narrating = True
+            narration.reset()
+            await self._send({"type": "narration_start"})
+        elif ctx.narrating and narration.is_off_intent(transcript):
+            ctx.narrating = False
+            await self._send({"type": "narration_stop"})
+        if not ctx.subtitles and subtitles.on_intent(transcript):
+            ctx.subtitles = True
+        elif ctx.subtitles and subtitles.is_off_intent(transcript):
+            ctx.subtitles = False
+
+    async def _emit_subtitle(self, who: str, text: str) -> None:
+        if self._ctx.subtitles and text.strip():
+            await self._send({"type": "subtitle", "who": who, "text": text.strip()})
 
     async def _translator_gate(self, transcript: str) -> bool:
         """Interpreter mode: every turn gets a direction hint, nothing more.

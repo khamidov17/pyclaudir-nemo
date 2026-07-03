@@ -422,6 +422,100 @@ async def _guest_tries_protected_tool(c: PhoneClient, b: ScriptedBackend) -> Non
     )
 
 
+async def phase_scan(c: PhoneClient, b: ScriptedBackend, data_dir: str) -> None:
+    print("phase 14: document scan — receipt → ledger (real VL stand-in)")
+    b.transcripts.append("scan this receipt")
+    b.replies.append(_tool_call("scan", {"kind": "receipt"}, "sc1"))
+    c.events.clear()
+    await c.speak_turn(amp=3000)  # owner voice (prior phase left a guest verdict)
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(3)
+    check("receipt logged via scan", "Korzinka" in c.texts(), c.texts()[-90:])
+    rows = db_rows(data_dir, "SELECT note FROM ledger WHERE kind='expense'")
+    check(
+        "expense row written",
+        any("Korzinka" in (n or "") for (n,) in rows),
+        f"{len(rows)} rows",
+    )
+
+
+async def phase_narration(c: PhoneClient, b: ScriptedBackend) -> None:
+    print("phase 15: scene narration — camera frame → spoken description")
+    b.transcripts.append("describe my surroundings")
+    c.events.clear()
+    await c.speak_turn(amp=3000)
+    started = await c.wait_for("narration_start", timeout=15)
+    check("narration_start sent to phone", started is not None)
+    await c.send_narration_frame()
+    await c.drain(6)
+    check(
+        "scene described from frame",
+        "doorway" in c.texts().lower(),
+        c.texts()[-80:],
+    )
+
+
+async def phase_subtitles(c: PhoneClient, b: ScriptedBackend) -> None:
+    print("phase 16: subtitles — captions emitted for you + Nemo")
+    b.transcripts.append("subtitles on")
+    c.events.clear()
+    await c.speak_turn(amp=3000)
+    await c.wait_for("turn_complete", timeout=15)
+    b.transcripts.append("qalaysan bugun")
+    b.replies.append([{"text": "zo'r, o'zing?"}])
+    c.events.clear()
+    await c.speak_turn(amp=3000)
+    await c.wait_for("turn_complete", timeout=15)
+    await c.drain(2)
+    subs = [e for e in c.events if e.get("type") == "subtitle"]
+    whos = {s["who"] for s in subs}
+    check("captions emitted for both sides", {"you", "nemo"} <= whos, str(subs[:2]))
+
+
+async def phase_health(c: PhoneClient, b: ScriptedBackend, data_dir: str) -> None:
+    print("phase 17: health rhythms — sleep-streak nudge weaves in")
+    os.environ["NEMO_VOICE_DATA_DIR"] = data_dir
+    from datetime import timedelta
+
+    import ledger
+
+    for d in range(4):
+        con = ledger._connect()
+        ts = (ledger._now_local() - timedelta(days=d)).strftime("%Y-%m-%d %H:%M")
+        con.execute(
+            "INSERT INTO ledger (ts, kind, amount, currency, category, note)"
+            " VALUES (?, 'habit', 5, '', 'sleep', '')",
+            (ts,),
+        )
+        con.commit()
+        con.close()
+    c.events.clear()
+    deadline = time.monotonic() + 16  # proactive poll (2s) + weave-in round-trip
+    while time.monotonic() < deadline and "nights" not in c.texts().lower():
+        await c.drain(2)
+    check("sleep nudge spoken", "nights" in c.texts().lower(), c.texts()[-90:])
+
+
+async def _run_phases(c: PhoneClient, backend: ScriptedBackend, data_dir: str) -> None:
+    await phase_proactive(c)
+    await phase_basic(c, data_dir)
+    await phase_tools(c, backend, data_dir)
+    await phase_bg_search(c, backend)
+    await phase_recording(c, backend)
+    await phase_messages(c, backend)
+    await phase_vision(c, backend)
+    await phase_voicelock(c, backend)
+    await phase_ambient(c, backend, data_dir)
+    await phase_translator(c, backend)
+    await phase_guidance(c, backend)
+    await phase_ledger(c, backend)
+    await phase_multispeaker(c, backend, data_dir)
+    await phase_scan(c, backend, data_dir)
+    await phase_narration(c, backend)
+    await phase_subtitles(c, backend)
+    await phase_health(c, backend, data_dir)
+
+
 async def main() -> int:
     data_dir = tempfile.mkdtemp(prefix="nemo-harness-")
     seed_followup(data_dir)
@@ -433,21 +527,23 @@ async def main() -> int:
     await asyncio.sleep(2.5)
     try:
         async with PhoneClient() as c:
-            await phase_proactive(c)
-            await phase_basic(c, data_dir)
-            await phase_tools(c, backend, data_dir)
-            await phase_bg_search(c, backend)
-            await phase_recording(c, backend)
-            await phase_messages(c, backend)
-            await phase_vision(c, backend)
-            await phase_voicelock(c, backend)
-            await phase_ambient(c, backend, data_dir)
-            await phase_translator(c, backend)
-            await phase_guidance(c, backend)
-            await phase_ledger(c, backend)
-            await phase_multispeaker(c, backend, data_dir)
+            await _run_phases(c, backend, data_dir)
     finally:
         proc.terminate()
+        try:
+            logs = proc.communicate(timeout=5)[0].decode()
+            if not all(CHECKS):
+                tail = [
+                    ln
+                    for ln in logs.splitlines()
+                    if any(
+                        k in ln for k in ("proactive", "health", "watcher", "Decision")
+                    )
+                ]
+                print("\n--- server proactive log (tail) ---")
+                print("\n".join(tail[-15:]))
+        except Exception:  # noqa: BLE001
+            pass
         gw.close()
         await nav_api.cleanup()
     ok = all(CHECKS)

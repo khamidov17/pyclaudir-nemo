@@ -43,9 +43,7 @@ _UUID4_RE = re.compile(
 # XML-tag-like injection patterns stripped from chunk text.
 _TAG_RE = re.compile(r"<[^>]{0,80}>")
 # Bidi overrides + zero-width/invisible chars used to hide injection markers.
-_BIDI_RE = re.compile(
-    r"[­؜​-‍‎‏‪-‮⁠⁦-⁩﻿]"
-)
+_BIDI_RE = re.compile(r"[­؜​-‍‎‏‪-‮⁠⁦-⁩﻿]")
 # LLM chat-template markers. Applied in a loop so nested forms collapse fully.
 _INJECT_RE = re.compile(r"\[/?INST\]|</s>|<s>|\[/?SYS\]", re.IGNORECASE)
 # Per-session rate limit: max 60 POSTs/min to /internal/brain_result.
@@ -126,7 +124,10 @@ async def handle_brain_result(request: web.Request) -> web.Response:
 
     orch = session_registry.get(session_id)
     if orch is None:
-        log_warn("voice_http/brain_result", f"session not found for chunk delivery (sid={session_id[:8]}…)")
+        log_warn(
+            "voice_http/brain_result",
+            f"session not found for chunk delivery (sid={session_id[:8]}…)",
+        )
         return web.Response(status=404)
     t = asyncio.create_task(orch.on_background_chunk(chunk, final, rev))
     _bg_tasks.add(t)
@@ -198,10 +199,15 @@ async def handle_proactive(request: web.Request) -> web.Response:
 
     orch = session_registry.any_active()
     if orch is None:
-        log_warn("voice_http/proactive", "proactive reminder arrived but no active voice session — not spoken")
+        log_warn(
+            "voice_http/proactive",
+            "proactive reminder arrived but no active voice session — not spoken",
+        )
         return web.Response(status=404)
     chunk = f"[proactive reminder — speak this naturally, do not read verbatim:] {text}"
-    t = asyncio.create_task(orch.on_background_chunk(chunk, True, 0))  # type: ignore[attr-defined]
+    # rev=-1 → proactive: never rev-stale (a rev-0 reminder is dropped once the
+    # session's snapshot rev has advanced past 0, i.e. after the first turn).
+    t = asyncio.create_task(orch.on_background_chunk(chunk, True, -1))  # type: ignore[attr-defined]
     _bg_tasks.add(t)
     t.add_done_callback(_bg_tasks.discard)
     return web.Response(status=202)

@@ -3,7 +3,7 @@
 Cards come from "quiz me on this: front / back" or the study-assistant
 skill's flashcards. `quiz_me` serves the most overdue card; Nemo asks it,
 hears the answer, and calls `grade_card` (0-5 quality). The SM-2 update
-schedules the next review. A low-severity watcher nudges when cards pile up
+schedules the next review. A watcher nudges when cards pile up
 (interrupt policy decides if it may speak). See docs/design-translator-nav.md.
 """
 
@@ -201,7 +201,7 @@ def _last_nudge() -> datetime | None:
 
 
 def poll_study() -> list:
-    """One low-severity nudge when enough cards are due, at most every N hours."""
+    """One nudge when enough cards are due, at most every N hours."""
     import watchers
 
     due = len(due_cards())
@@ -213,7 +213,7 @@ def poll_study() -> list:
     return [
         watchers.Event(
             "study",
-            "low",
+            "normal",
             f"{due} flashcards are due — a quick quiz round?",
             f"study:{_fmt(_now_local())[:13]}",
             due,

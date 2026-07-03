@@ -43,6 +43,7 @@ _PROTECTED_TOOLS: frozenset[str] = (
             "log_habit",
             "ledger_summary",
             "add_flashcard",
+            "scan",
         }
     )
 )
@@ -65,6 +66,8 @@ class _SessionCtx:
     ambient_on: bool = False
     translator_lang: str | None = None  # target language while interpreting
     translator_aside: bool = False  # current turn is an aside to Nemo
+    narrating: bool = False  # live scene-narration accessibility mode
+    subtitles: bool = False  # mirror transcripts to the screen as captions
 
 
 # ── thin helpers ──────────────────────────────────────────────────────────────

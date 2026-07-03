@@ -56,8 +56,11 @@ FUNCTIONS: list[dict] = [
 ]
 
 
-def _ask_vl(image_b64: str, question: str, mime: str) -> str | None:
-    """Send one image + question to Qwen-VL; return the text answer or None."""
+def describe(
+    image_b64: str, prompt: str, mime: str = "jpeg", max_tokens: int = 300
+) -> str | None:
+    """Send one image + prompt to Qwen-VL; return the raw text answer or None.
+    Public helper reused by vision_scan and narration."""
     key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
     if not key:
         return None
@@ -68,11 +71,7 @@ def _ask_vl(image_b64: str, question: str, mime: str) -> str | None:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": question
-                            + " Answer briefly and naturally for Avazbek, in English.",
-                        },
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -82,7 +81,7 @@ def _ask_vl(image_b64: str, question: str, mime: str) -> str | None:
                     ],
                 }
             ],
-            "max_tokens": 300,
+            "max_tokens": max_tokens,
         }
     ).encode()
     req = urllib.request.Request(
@@ -96,6 +95,15 @@ def _ask_vl(image_b64: str, question: str, mime: str) -> str | None:
     except Exception as exc:  # noqa: BLE001 — never crash the voice turn
         LOG.warning("Qwen-VL request failed: %s", exc)
         return None
+
+
+def _ask_vl(image_b64: str, question: str, mime: str) -> str | None:
+    """`look`'s wrapper: answer a spoken question about the image, briefly."""
+    return describe(
+        image_b64,
+        question + " Answer briefly and naturally for Avazbek, in English.",
+        mime,
+    )
 
 
 async def dispatch(name: str, args: dict, bridge) -> str:

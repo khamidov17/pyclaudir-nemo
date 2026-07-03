@@ -15,6 +15,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/status.dart' as ws_status;
 import 'location_streamer.dart';
+import 'scene_streamer.dart';
 import 'secure_net.dart';
 
 const _storage = FlutterSecureStorage(
@@ -122,9 +123,19 @@ class VoiceChatService extends ChangeNotifier {
   Stream<Map<String, dynamic>> get actions => _actions.stream;
 
   final LocationStreamer _location = LocationStreamer();
+  final SceneStreamer _scene = SceneStreamer();
+
+  // Captions pushed by the server while subtitles mode is on ({who, text}).
+  final StreamController<Map<String, dynamic>> _subtitles =
+      StreamController.broadcast();
+  Stream<Map<String, dynamic>> get subtitles => _subtitles.stream;
 
   void sendLocation(double lat, double lon) {
     _ws?.sink.add(jsonEncode({'type': 'location', 'lat': lat, 'lon': lon}));
+  }
+
+  void _sendNarrationFrame(String imageB64) {
+    _ws?.sink.add(jsonEncode({'type': 'narration_frame', 'image_b64': imageB64}));
   }
 
   void sendActionResult(String id,
@@ -417,6 +428,13 @@ class VoiceChatService extends ChangeNotifier {
           _location.start(sendLocation);
         case 'nav_stop':
           _location.stop();
+        case 'narration_start':
+          // Scene-narration accessibility mode: stream camera frames.
+          _scene.start(_sendNarrationFrame);
+        case 'narration_stop':
+          _scene.stop();
+        case 'subtitle':
+          if (!_disposed && !_subtitles.isClosed) _subtitles.add(data);
         case 'error':
           if (!_disposed && !_errors.isClosed) _errors.add(data['message'] as String? ?? 'Voice error');
       }
@@ -597,6 +615,7 @@ class VoiceChatService extends ChangeNotifier {
     _ws?.sink.close(ws_status.goingAway);
     _ws = null;
     _location.stop();
+    _scene.stop();
     _muted = false;
     _muteWatchdog?.cancel();
     // Restore normal audio routing (undo comm-mode/speakerphone). No-op when off.
@@ -633,6 +652,7 @@ class VoiceChatService extends ChangeNotifier {
     _controls.close();
     _errors.close();
     _actions.close();
+    _subtitles.close();
     super.dispose();
   }
 }
