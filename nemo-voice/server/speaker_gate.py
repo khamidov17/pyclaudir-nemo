@@ -214,14 +214,15 @@ class SpeakerState:
     def record(self, verdict: Verdict, name: str | None = None) -> None:
         self.last_verdict = verdict
         self.name = name
-        if verdict is Verdict.OWNER:
-            self.session_verified = True
 
     def allow_sensitive(self) -> bool:
         """May the CURRENT speaker touch protected tools? Fails closed.
-        A STRANGER verdict always blocks — even in a session the owner already
-        verified (he may have handed the phone to someone). The biometric
-        rescue applies only to the UNSURE gray zone (sick voice, noise)."""
+        A STRANGER verdict always blocks. UNSURE (gray zone: sick voice, noise)
+        is allowed only after an actual phone-biometric pass set
+        ``session_verified`` — NOT merely because the owner spoke earlier, or a
+        gray-zone guest handed the phone after an owner turn would inherit
+        access. An OWNER verdict is allowed on its own; it does not need or set
+        session_verified."""
         if self.last_verdict in (Verdict.OFF, Verdict.OWNER):
             return True
         if self.last_verdict is Verdict.UNSURE:

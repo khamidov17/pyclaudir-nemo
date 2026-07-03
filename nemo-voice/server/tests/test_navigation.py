@@ -124,3 +124,10 @@ def test_instruction_rendering():
     assert navigation._instruction({"maneuver": {"type": "arrive"}}) == (
         "you have arrived at your destination"
     )
+
+
+def test_reset_clears_leaked_route():
+    navigation._ACTIVE["nav"] = _nav()
+    assert navigation.active()
+    navigation.reset()  # session teardown must clear module-global state
+    assert not navigation.active()

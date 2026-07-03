@@ -142,13 +142,18 @@ class _GatesMixin:
         if translator.is_off_intent(transcript):
             await self._translator_off()
             return True
-        owner = self._speaker.last_verdict in (
-            speaker_gate.Verdict.OWNER,
-            speaker_gate.Verdict.OFF,
-        )
-        ctx.translator_aside = owner and ambient.is_addressed(transcript)
+        verdict = self._speaker.last_verdict
+        if verdict is speaker_gate.Verdict.OFF:
+            # No voiceprint (gate off/unavailable) — we can't tell who's speaking,
+            # so don't force the owner direction. Pass owner_voice=None for a
+            # neutral hint that leans on the language rule in the prompt.
+            ctx.translator_aside = ambient.is_addressed(transcript)
+            owner_voice: bool | None = None
+        else:
+            owner_voice = verdict is speaker_gate.Verdict.OWNER
+            ctx.translator_aside = owner_voice and ambient.is_addressed(transcript)
         hint = translator.turn_hint(
-            ctx.translator_lang, owner_voice=owner, aside=ctx.translator_aside
+            ctx.translator_lang, owner_voice=owner_voice, aside=ctx.translator_aside
         )
         await self.link.inject_text(hint)
         return True

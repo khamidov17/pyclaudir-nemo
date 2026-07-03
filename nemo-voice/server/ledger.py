@@ -149,8 +149,8 @@ def _summary(period: str, category: str) -> dict:
             params,
         ).fetchall()
         by_cat = con.execute(
-            f"SELECT category, SUM(amount) FROM ledger"
-            f" WHERE kind='expense' AND {where} GROUP BY category"
+            f"SELECT category, currency, SUM(amount) FROM ledger"
+            f" WHERE kind='expense' AND {where} GROUP BY category, currency"
             f" ORDER BY SUM(amount) DESC LIMIT 6",
             params,
         ).fetchall()
@@ -167,13 +167,26 @@ def _summary(period: str, category: str) -> dict:
             {"currency": c or _CURRENCY, "total": t, "entries": n}
             for c, t, n in expenses
         ],
-        "top_categories": [{"category": c, "total": t} for c, t in by_cat],
+        "top_categories": [
+            {"category": c, "currency": cur or _CURRENCY, "total": t}
+            for c, cur, t in by_cat
+        ],
         "habits": [{"name": c, "times": n, "total_amount": t} for c, n, t in habits],
     }
 
 
+def _num(value: object) -> float:
+    """Coerce an LLM-supplied number defensively (it may pass '50k' / 'one')."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).replace(",", "").strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _tool_expense(args: dict) -> dict:
-    amount = float(args.get("amount") or 0)
+    amount = _num(args.get("amount"))
     if amount <= 0:
         return {"error": "amount must be positive"}
     _add(
@@ -195,7 +208,7 @@ def _tool_habit(args: dict) -> dict:
     _add(
         Entry(
             kind="habit",
-            amount=float(args.get("amount") or 0),
+            amount=_num(args.get("amount")),
             category=habit,
             note=str(args.get("note") or ""),
         )

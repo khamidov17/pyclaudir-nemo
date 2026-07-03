@@ -30,8 +30,12 @@ def test_daytime_no_session_pushes():
     assert decide("normal", live_session=False, hour=14) is Decision.PUSH
 
 
-def test_low_severity_defers():
-    assert decide("low", live_session=True, hour=14) is Decision.DEFER
+def test_low_severity_pushes_not_defers():
+    # low → a quiet push, never a spoken interrupt, and never DEFER-forever.
+    assert decide("low", live_session=True, hour=14) is Decision.PUSH
+    assert decide("low", live_session=False, hour=14) is Decision.PUSH
+    # still deferred inside quiet hours (not critical)
+    assert decide("low", live_session=True, hour=2) is Decision.DEFER
 
 
 def test_quiet_hours_defer_except_critical():
@@ -129,3 +133,24 @@ async def test_deferred_event_not_acked(monkeypatch):
     delivered = await proactive_loop.tick()
     assert delivered == 0
     assert len(memory_store.open_followups()) == 1  # still open, refires later
+
+
+@pytest.mark.asyncio
+async def test_dropped_weave_in_falls_back_to_push(monkeypatch):
+    """If the live session drops the chunk (sensitive turn / closed), the event
+    must PUSH, not be acked-and-lost."""
+    memory_store.add_followup("call the clinic", "2020-01-01 10:00")
+
+    class DropOrch:
+        async def on_background_chunk(self, chunk, final, rev):
+            return False  # weave-in dropped it (e.g. sensitive turn)
+
+    pushed: list[str] = []
+    monkeypatch.setattr(session_registry, "any_active", lambda: DropOrch())
+    monkeypatch.setattr(interrupt_policy, "local_hour", lambda: 14)
+    monkeypatch.setattr(
+        proactive_loop.reminders, "notify_now", lambda text: pushed.append(text)
+    )
+    delivered = await proactive_loop.tick()
+    assert delivered == 1 and "call the clinic" in pushed[0]  # pushed, not lost
+    assert memory_store.open_followups() == []  # acked only after real delivery

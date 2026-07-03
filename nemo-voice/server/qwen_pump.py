@@ -210,6 +210,7 @@ async def _run_session_inner(
         await link.aclose()
         if orch is not None:
             orch.close()
+        navigation.reset()  # don't leak a route into the next session
         try:
             if memory_store.memory_v2_enabled():
                 await fact_extractor.maybe_extract()

@@ -115,7 +115,7 @@ class Orchestrator:
             return
         self.snapshot.add_entity(name, str(args)[:200])
 
-    async def on_background_chunk(self, chunk: str, final: bool, rev: int) -> None:
+    async def on_background_chunk(self, chunk: str, final: bool, rev: int) -> bool:
         """P3: engine POSTed a clause chunk to /internal/brain_result.
 
         Drop stale chunks (topic changed) or park on active barge-in.
@@ -125,25 +125,29 @@ class Orchestrator:
         a conversation snapshot, so it is never stale (the rev counter climbs
         with every turn; a rev-0 proactive event would be dropped in any long
         session otherwise).
+
+        Returns True iff the chunk was injected or parked for flush; False when
+        dropped (weave-in off, stale, or sensitive). The proactive caller uses
+        this to fall back to a phone push instead of losing the event.
         """
         if not _WEAVE_IN:
-            return
+            return False
         if rev >= 0 and rev < self.snapshot.rev:
             LOG.debug(
                 "orchestrator: dropping stale chunk (rev=%d < snap=%d)",
                 rev,
                 self.snapshot.rev,
             )
-            return
+            return False
         if self.link.sensitive_next:
             LOG.debug(
-                "orchestrator: sensitive session — chunk dropped, will deliver via phone"
+                "orchestrator: sensitive session — chunk dropped, caller falls back to phone"
             )
-            return
+            return False
         if self._speaking:
             self._park_chunk(chunk, rev)
-            return
-        await self._inject(chunk, final, rev)
+            return True
+        return await self._inject(chunk, final, rev)
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
@@ -163,14 +167,17 @@ class Orchestrator:
             return
         LOG.info("orchestrator: flushing %d stashed chunk(s)", len(to_inject))
         last = len(to_inject) - 1
-        for i, (chunk, _r) in enumerate(to_inject):
-            if self.snapshot.rev != cur_rev:
+        for i, (chunk, r) in enumerate(to_inject):
+            # Proactive chunks (r < 0) are never rev-stale — flush them even if
+            # a new turn bumped the rev mid-flush. Only topic-tied engine chunks
+            # stop when their snapshot moves on.
+            if r >= 0 and self.snapshot.rev != cur_rev:
                 break
-            await self._inject(chunk, final=(i == last), rev=cur_rev)
+            await self._inject(chunk, final=(i == last), rev=r)
             if i != last:
                 await asyncio.sleep(0.05)
 
-    async def _inject(self, chunk: str, final: bool, rev: int) -> None:  # noqa: ARG002
+    async def _inject(self, chunk: str, final: bool, rev: int) -> bool:  # noqa: ARG002
         text = (
             f"[here is additional context from my engine — weave it naturally "
             f"into your next spoken reply, do not read it verbatim:] {chunk}"
@@ -178,6 +185,7 @@ class Orchestrator:
         delivered = await self.link.inject_text_when_idle(text, sensitive=False)
         if not delivered:
             LOG.debug("orchestrator: inject lost (session closed)")
+        return bool(delivered)
 
     # ── P4: self-barge guard ──────────────────────────────────────────────────
 

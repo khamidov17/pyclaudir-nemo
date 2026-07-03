@@ -41,23 +41,38 @@ def _today() -> str:
 
 
 def _sleep_streak() -> int:
-    """Consecutive most-recent nights with sleep < the healthy minimum."""
-    rows = ledger.recent_habits("sleep", days=14)
+    """Consecutive most-recent CALENDAR nights with sleep < the healthy
+    minimum. Counts distinct nights, not rows, and stops at the first gap so a
+    missing night (no log) or a good night both break the streak — 'N nights
+    running' stays literally true."""
+    rows = ledger.recent_habits("sleep", days=30)
     streak = 0
-    for _ts, hours in rows:
-        if 0 < hours < _SLEEP_HOURS_MIN:
-            streak += 1
-        else:
+    expected: object = None  # anchored to the most recent logged night
+    seen: set = set()
+    for ts, hours in rows:
+        try:
+            day = datetime.strptime(ts[:10], "%Y-%m-%d").date()
+        except ValueError:
             break
+        if day in seen:
+            continue  # multiple logs same night — count the night once
+        seen.add(day)
+        if expected is not None and day != expected:
+            break  # a night with no short-sleep log → streak ends
+        if not (0 < hours < _SLEEP_HOURS_MIN):
+            break
+        streak += 1
+        expected = day - timedelta(days=1)
     return streak
 
 
 def _days_since_workout() -> int | None:
-    """Days since any exercise habit, or None if one was logged today / never
-    logged at all (nothing to nag about from an empty history)."""
+    """Days since any exercise habit, or None if never logged at all (nothing
+    to nag about from an empty history). Window must exceed the largest gap we
+    ever report, or a long gap would look like no history."""
     latest: str | None = None
     for name in _WORKOUT_NAMES:
-        rows = ledger.recent_habits(name, days=_WORKOUT_GAP_DAYS + 5)
+        rows = ledger.recent_habits(name, days=180)
         if rows and (latest is None or rows[0][0] > latest):
             latest = rows[0][0]
     if latest is None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
 
 import phone_tools as _phone_tools
 import qwen_usage
@@ -43,7 +44,12 @@ _PROTECTED_TOOLS: frozenset[str] = (
             "log_habit",
             "ledger_summary",
             "add_flashcard",
+            "quiz_me",
+            "grade_card",
             "scan",
+            "set_reminder",
+            "list_reminders",
+            "cancel_reminder",
         }
     )
 )
@@ -58,8 +64,8 @@ from dataclasses import dataclass, field  # noqa: E402
 class _SessionCtx:
     """Bundle client_ws + bridge to keep _QwenPump.__init__ within 4 params."""
 
-    client_ws: object
-    bridge: object
+    client_ws: Any  # a websocket with .send(); duck-typed across backends
+    bridge: Any
     speaker: speaker_gate.SpeakerState = field(
         default_factory=speaker_gate.SpeakerState
     )

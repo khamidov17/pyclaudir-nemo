@@ -25,7 +25,9 @@ _LOG = logging.getLogger("nemo.error_journal")
 _DATA_DIR = Path(
     os.environ.get(
         "NEMO_VOICE_DATA_DIR",
-        os.environ.get("PYCLAUDIR_DATA_DIR", Path(__file__).resolve().parents[2] / "data"),
+        os.environ.get(
+            "PYCLAUDIR_DATA_DIR", Path(__file__).resolve().parents[2] / "data"
+        ),
     )
 )
 _JOURNAL = _DATA_DIR / "nemo_error_log.md"

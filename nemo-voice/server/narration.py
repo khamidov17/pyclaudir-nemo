@@ -65,10 +65,14 @@ def describe_frame(image_b64: str) -> str | None:
     now = time.monotonic()
     if now - _last_ts < _MIN_INTERVAL_S:
         return None
-    _last_ts = now
-    desc = vision.describe(image_b64, _PROMPT, "jpeg", 120)
-    if not desc:
+    try:
+        desc = vision.describe(image_b64, _PROMPT, "jpeg", 120)
+    except Exception as exc:  # noqa: BLE001 — a bad frame must never crash the ws
+        LOG.warning("narration describe failed: %s", exc)
         return None
+    if not desc:
+        return None  # don't consume the throttle window on a failed frame
+    _last_ts = now
     desc = desc.strip()
     low = desc.lower()
     if low in ("clear", "clear.") or low == _last_desc:

@@ -24,9 +24,7 @@ from reminder_times import FMT, now_utc, trigger_from_args
 
 _TAG_RE = re.compile(r"<[^>]{0,80}>")
 # Bidi overrides + zero-width/invisible chars used to hide injection markers.
-_BIDI_RE = re.compile(
-    r"[­؜​-‍‎‏‪-‮⁠⁦-⁩﻿]"
-)
+_BIDI_RE = re.compile(r"[­؜​-‍‎‏‪-‮⁠⁦-⁩﻿]")
 # LLM chat-template injection markers. Applied in a loop so nested forms
 # (e.g. [IN[SYS]ST] → [INST] after first pass) are fully removed.
 _INJECT_RE = re.compile(r"\[/?INST\]|</s>|<s>|\[/?SYS\]", re.IGNORECASE)
@@ -197,7 +195,11 @@ def dispatch(name: str, args: dict) -> str:
     """Run a reminder tool; always returns a JSON string for the voice agent."""
     try:
         if not _CHAT_ID:
-            log_error("reminder/config", "NEMO_DEFAULT_CHAT_ID not set — reminder not saved", f"tool={name}")
+            log_error(
+                "reminder/config",
+                "NEMO_DEFAULT_CHAT_ID not set — reminder not saved",
+                f"tool={name}",
+            )
             return json.dumps({"error": "reminders aren't configured"})
         if name == "set_reminder":
             return _set(args)

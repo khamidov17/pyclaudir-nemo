@@ -79,3 +79,15 @@ def test_registered_in_watchers():
     import watchers
 
     assert any(name == "health" for name, _p, _a in watchers.WATCHERS)
+
+
+def test_workout_gap_beyond_short_window_still_fires():
+    # A 14-day gap must still nag — the read window must exceed the gap.
+    _log_workout("gym", 14)
+    assert any(e.key == "health:workout" for e in health.poll_health())
+
+
+def test_non_contiguous_sleep_breaks_streak():
+    _log_sleep(5.0, 0)  # today
+    _log_sleep(5.0, 2)  # two days ago — yesterday missing → gap
+    assert health._sleep_streak() == 1  # only the contiguous run counts

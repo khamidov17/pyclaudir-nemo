@@ -41,8 +41,13 @@ async def _speak(text: str) -> bool:
     if orch is None:
         return False
     chunk = f"[proactive — mention this naturally, do not read verbatim:] {text}"
-    await orch.on_background_chunk(chunk, True, 0)  # type: ignore[attr-defined]
-    return True
+    # rev=-1 → proactive: never rev-stale, unlike topic-tied engine chunks.
+    # Return the ACTUAL delivery result: if weave-in dropped it (sensitive turn,
+    # closed session), _deliver falls back to a phone push instead of acking a
+    # lost event.
+    return bool(
+        await orch.on_background_chunk(chunk, True, -1)  # type: ignore[attr-defined]
+    )
 
 
 async def _deliver(event: watchers.Event, decision: Decision) -> bool:

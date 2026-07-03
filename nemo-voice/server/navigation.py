@@ -250,3 +250,11 @@ async def _build(dest: str, lat: float, lon: float) -> Navigator | None:
 
 def active() -> bool:
     return _ACTIVE["nav"] is not None or _ACTIVE["pending_dest"] is not None
+
+
+def reset() -> None:
+    """Clear all navigation state — called on session teardown so a route can't
+    leak into the next session (a mobile reconnect starts a fresh session while
+    _ACTIVE is module-global)."""
+    _ACTIVE["nav"] = None
+    _ACTIVE["pending_dest"] = None

@@ -104,3 +104,33 @@ async def test_unparseable_vl_degrades(monkeypatch):
 async def test_no_bridge():
     out = json.loads(await vision_scan.dispatch("scan", {}, None))
     assert "error" in out
+
+
+@pytest.mark.asyncio
+async def test_receipt_thousands_separator_does_not_crash(monkeypatch):
+    # Real VL failure mode: "85,000" — must NOT raise ValueError, must log 85000.
+    _vl(
+        monkeypatch,
+        {
+            "kind": "receipt",
+            "vendor": "Korzinka",
+            "total": "85,000",
+            "currency": "UZS",
+            "category": "food",
+        },
+    )
+    out = json.loads(
+        await vision_scan.dispatch("scan", {"kind": "receipt"}, FakeBridge())
+    )
+    assert "85000" in out["result"] or "85,000" in out["result"]
+    summary = json.loads(await ledger.dispatch("ledger_summary", {"period": "week"}))
+    assert summary["spent"][0]["total"] == 85000
+
+
+@pytest.mark.asyncio
+async def test_receipt_garbage_total_degrades(monkeypatch):
+    _vl(monkeypatch, {"kind": "receipt", "vendor": "Shop", "total": "N/A"})
+    out = json.loads(
+        await vision_scan.dispatch("scan", {"kind": "receipt"}, FakeBridge())
+    )
+    assert "amount" in out["result"].lower()  # asks for it, no crash

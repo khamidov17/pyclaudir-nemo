@@ -28,6 +28,10 @@ from vad import EnergyVad
 
 LOG = logging.getLogger("gateway.protocol")
 
+# ~60s of 16k mono PCM16 — cap so noise with no VAD end-of-speech can't grow
+# the per-turn buffer without bound.
+_MAX_UTTERANCE_BYTES = 16000 * 2 * 60
+
 
 class OmniBackend(Protocol):
     async def transcribe(self, pcm: bytes) -> str:
@@ -112,6 +116,10 @@ class GatewaySession:
         except (binascii.Error, ValueError, TypeError):
             return [_error("bad_audio", "audio was not valid base64")]
         self.audio_buf.extend(pcm)
+        # Cap a runaway buffer (~60s at 16k mono) so continuous above-threshold
+        # noise with no VAD end-of-speech can't grow memory unbounded.
+        if len(self.audio_buf) > _MAX_UTTERANCE_BYTES:
+            del self.audio_buf[:-_MAX_UTTERANCE_BYTES]
         out: list[dict] = []
         for vad_event in self.vad.feed(pcm):
             if vad_event == "speech_started":

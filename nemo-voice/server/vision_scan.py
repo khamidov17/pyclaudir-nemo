@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import ledger
 import memory_store
@@ -59,6 +60,21 @@ _PROMPT = (
 )
 
 
+def _to_number(value: object) -> float:
+    """Coerce a VL-supplied amount to a float — models emit thousands
+    separators, currency symbols, or junk despite the prompt. 0.0 on failure so
+    a bad total degrades to 'tell me the amount' instead of crashing the turn."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return 0.0
+    cleaned = re.sub(r"[^\d.]", "", value.replace(",", "").replace(" ", ""))
+    try:
+        return float(cleaned) if cleaned else 0.0
+    except ValueError:
+        return 0.0
+
+
 def _parse(raw: str) -> dict:
     try:
         start, end = raw.index("{"), raw.rindex("}") + 1
@@ -69,7 +85,7 @@ def _parse(raw: str) -> dict:
 
 
 def _handle_receipt(data: dict) -> str:
-    total = float(data.get("total") or 0)
+    total = _to_number(data.get("total"))
     vendor = str(data.get("vendor") or "").strip()
     if total <= 0:
         return json.dumps(
@@ -109,6 +125,25 @@ def _handle_card(data: dict) -> str:
     return json.dumps({"result": f"Saved {name}'s contact."})
 
 
+def _route(kind: str, data: dict) -> str:
+    if kind == "receipt":
+        return _handle_receipt(data)
+    if kind == "card":
+        return _handle_card(data)
+    if kind == "form":
+        summary = str(data.get("summary") or "").strip()
+        return json.dumps(
+            {"result": f"{summary or 'A form.'} Want me to help you fill it in?"}
+        )
+    return json.dumps(
+        {
+            "result": str(
+                data.get("summary") or "I couldn't tell what kind of document that is."
+            )
+        }
+    )
+
+
 async def dispatch(name: str, args: dict, bridge) -> str:
     if name != "scan":
         return json.dumps({"error": f"unknown scan tool {name}"})
@@ -128,19 +163,4 @@ async def dispatch(name: str, args: dict, bridge) -> str:
         )
     data = _parse(raw)
     kind = want if want != "auto" else str(data.get("kind") or "other")
-    if kind == "receipt":
-        return _handle_receipt(data)
-    if kind == "card":
-        return _handle_card(data)
-    if kind == "form":
-        summary = str(data.get("summary") or "").strip()
-        return json.dumps(
-            {"result": f"{summary or 'A form.'} Want me to help you fill it in?"}
-        )
-    return json.dumps(
-        {
-            "result": str(
-                data.get("summary") or "I couldn't tell what kind of document that is."
-            )
-        }
-    )
+    return _route(kind, data)

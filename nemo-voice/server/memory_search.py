@@ -162,25 +162,23 @@ def search(
     rows = searchable_rows(kinds)
     qterms = _terms(q)
     qv = embed([q]) if available() else None
-    scored: list[tuple[float, Row]] = []
-    if qv:
-        scored = [
-            (
-                cos * _VEC_WEIGHT
-                + _keyword_score(qterms, r.text) * _KW_WEIGHT
-                + _KIND_BOOST[r.kind],
-                r,
-            )
-            for cos, r in knn(qv[0], rows)
-        ]
-    else:
-        scored = [
-            (kw + _KIND_BOOST[r.kind], r)
-            for r in rows
-            if (kw := _keyword_score(qterms, r.text)) > 0
-        ]
+    qvec = qv[0] if qv else None
+    scored = [(s, r) for r in rows if (s := _score_row(qvec, qterms, r)) is not None]
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:limit]]
+
+
+def _score_row(qvec: list[float] | None, qterms: set[str], r: Row) -> float | None:
+    """Hybrid score when the row is embedded AND clears the cosine floor; else
+    keyword-only (so rows not yet embedded — or when embedding failed — stay
+    findable by keyword instead of vanishing). None = no match."""
+    kw = _keyword_score(qterms, r.text)
+    cos = _cosine(qvec, r.vec) if (qvec and r.vec is not None) else 0.0
+    if cos >= _MIN_COS:
+        return cos * _VEC_WEIGHT + kw * _KW_WEIGHT + _KIND_BOOST[r.kind]
+    if kw > 0:
+        return kw * _KW_WEIGHT + _KIND_BOOST[r.kind]
+    return None
 
 
 def find_similar_facts(text: str, k: int = 3) -> list[tuple[float, Row]]:

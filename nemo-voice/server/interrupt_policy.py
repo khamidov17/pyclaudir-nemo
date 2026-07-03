@@ -44,7 +44,9 @@ def decide(severity: str, live_session: bool, hour: int | None = None) -> Decisi
     if _in_quiet_hours(h):
         return Decision.PUSH if severity == "critical" else Decision.DEFER
     if severity == "low":
-        return Decision.DEFER
+        # Gentle: a quiet phone push, never a spoken interruption. NOT defer —
+        # DEFER + a never-changing severity would loop forever, never delivered.
+        return Decision.PUSH
     if not known:
         return Decision.PUSH
     if live_session:

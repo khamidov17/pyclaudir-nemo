@@ -56,7 +56,19 @@ def test_stranger_blocked_even_in_verified_session():
     assert s.allow_sensitive()
     s.record(Verdict.STRANGER)  # phone handed to someone else mid-session
     assert not s.allow_sensitive()
-    s.record(Verdict.UNSURE)  # owner again but hoarse — session already verified
+
+
+def test_owner_speech_does_not_verify_unsure():
+    """An UNSURE voice after an OWNER turn must NOT inherit access — the owner
+    speaking is not a biometric pass (a gray-zone guest handoff would else get
+    in)."""
+    s = SpeakerState()
+    s.record(Verdict.OWNER)
+    assert not s.session_verified
+    s.record(Verdict.UNSURE)  # gray-zone voice (cousin / just-enrolled guest)
+    assert not s.allow_sensitive()
+    s.session_verified = True  # phone biometric actually passed
+    s.record(Verdict.UNSURE)
     assert s.allow_sensitive()
 
 
@@ -82,3 +94,29 @@ def test_turn_audio_buffer_drains():
     s.pcm_buf.extend(b"\x01\x02")
     assert s.take_turn_audio() == b"\x01\x02"
     assert s.take_turn_audio() == b""
+
+
+def test_owner_write_tools_are_protected():
+    """Every tool that writes owner data or controls the phone must be gated —
+    a stranger's voice must not reach them."""
+    from pump_tools import _PROTECTED_TOOLS
+
+    must_protect = {
+        "remember",
+        "recall",
+        "send_telegram",
+        "delegate_task",
+        "log_expense",
+        "log_habit",
+        "ledger_summary",
+        "add_flashcard",
+        "quiz_me",
+        "grade_card",
+        "scan",
+        "enroll_speaker",
+        "set_reminder",
+        "list_reminders",
+        "cancel_reminder",
+        "read_messages",
+    }
+    assert must_protect <= _PROTECTED_TOOLS

@@ -22,7 +22,30 @@ async def test_expense_logged_and_summed():
     out = json.loads(await ledger.dispatch("ledger_summary", {"period": "week"}))
     assert out["spent"][0]["total"] == 85000
     assert out["spent"][0]["currency"] == "UZS"
-    assert out["top_categories"][0] == {"category": "food", "total": 70000}
+    assert out["top_categories"][0] == {
+        "category": "food",
+        "currency": "UZS",
+        "total": 70000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_top_categories_split_by_currency():
+    await ledger.dispatch("log_expense", {"amount": 50000, "category": "food"})
+    await ledger.dispatch(
+        "log_expense", {"amount": 20, "category": "food", "currency": "USD"}
+    )
+    out = json.loads(await ledger.dispatch("ledger_summary", {"period": "week"}))
+    cats = {(c["category"], c["currency"]): c["total"] for c in out["top_categories"]}
+    assert cats[("food", "UZS")] == 50000 and cats[("food", "USD")] == 20
+
+
+@pytest.mark.asyncio
+async def test_non_numeric_amount_does_not_crash():
+    out = json.loads(
+        await ledger.dispatch("log_expense", {"amount": "lots", "category": "x"})
+    )
+    assert "error" in out  # coerced to 0 → rejected, no ValueError
 
 
 @pytest.mark.asyncio

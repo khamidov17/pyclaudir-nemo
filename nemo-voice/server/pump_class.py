@@ -237,12 +237,9 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
             return
         name = item.get("name")
         self._clear_pending_for(name)
-        if self._orchestrator:
-            try:
-                args = json.loads(item.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            await self._orchestrator.on_tool_call(name or "", args)
+        # Gate BEFORE notifying the orchestrator: a refused tool must not reach
+        # on_tool_call, which may route/dispatch side effects the suppression is
+        # meant to prevent.
         if name in _PROTECTED_TOOLS and not self._speaker.allow_sensitive():
             await self._refuse_unverified(item)
             return
@@ -254,6 +251,12 @@ class _QwenPump(_GatesMixin, _IntentsMixin):
                 json.dumps({"error": "interpreting right now — just translate"}),
             )
             return
+        if self._orchestrator:
+            try:
+                args = json.loads(item.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            await self._orchestrator.on_tool_call(name or "", args)
         if name == "start_navigation":
             await self._send({"type": "nav_start"})
         elif name == "stop_navigation":

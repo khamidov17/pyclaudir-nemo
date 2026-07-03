@@ -135,12 +135,22 @@ def _health_watcher() -> tuple:
     return ("health", health.poll_health, health.ack_health)
 
 
-WATCHERS = (
-    ("followup", poll_followups, ack_followup),
-    ("infra", poll_infra, ack_infra),
-    _study_watcher(),
-    _health_watcher(),
-)
+def _build_watchers() -> tuple:
+    """Core watchers always; optional ones guarded so a broken optional module
+    can't fail this import and take the whole proactive loop down with it."""
+    watchers: list[tuple] = [
+        ("followup", poll_followups, ack_followup),
+        ("infra", poll_infra, ack_infra),
+    ]
+    for factory in (_study_watcher, _health_watcher):
+        try:
+            watchers.append(factory())
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("optional watcher unavailable: %s", exc)
+    return tuple(watchers)
+
+
+WATCHERS = _build_watchers()
 
 
 def poll_all() -> list[Event]:

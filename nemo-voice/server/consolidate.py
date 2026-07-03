@@ -14,6 +14,7 @@ profile pick them up like any other memory. Failures skip a day, never crash.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -170,6 +171,8 @@ async def maybe_run() -> int:
         return 0
     written = _apply(parsed, day)
     _mark_run(day)
-    memory_search.embed_pending()
+    # Blocking urllib embed — off the event loop so a live voice session doesn't
+    # freeze during the nightly pass (matches fact_extractor).
+    await asyncio.to_thread(memory_search.embed_pending)
     LOG.info("consolidation: %d memory item(s) written for %s", written, day)
     return written

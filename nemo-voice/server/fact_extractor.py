@@ -113,11 +113,22 @@ def _upsert_fact(text: str, report: ExtractReport) -> None:
     if similar and similar[0][0] >= _DUP_COS:
         report.skipped_dups += 1
         return
+    if not similar and _exact_live_dup(text):
+        # Embeddings unavailable → find_similar_facts returns []; fall back to an
+        # exact-text check so an embed outage doesn't re-insert the same fact
+        # every extraction pass.
+        report.skipped_dups += 1
+        return
     new_id = memory_store.add_fact(text, source="voice_extract")
     report.facts_added += 1
     if similar and similar[0][0] >= _RELATED_COS:
         memory_store.supersede_fact(similar[0][1].id, new_id)
         report.facts_superseded += 1
+
+
+def _exact_live_dup(text: str) -> bool:
+    norm = text.strip().lower()
+    return any(t.strip().lower() == norm for _, _, t in memory_store.live_facts())
 
 
 def _clean_strings(items: object) -> list[str]:

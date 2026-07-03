@@ -92,12 +92,20 @@ def instructions(target_lang: str) -> str:
     )
 
 
-def turn_hint(target_lang: str, owner_voice: bool, aside: bool) -> str:
-    """The per-turn context item that pins direction (voiceprint signal)."""
+def turn_hint(target_lang: str, owner_voice: bool | None, aside: bool) -> str:
+    """The per-turn context item that pins direction. ``owner_voice`` is the
+    voiceprint signal: True → outbound, False → inbound, None → unknown (gate
+    off) so the hint stays neutral and the language rule decides."""
     if aside:
         return (
             "[ASIDE — Avazbek is asking YOU directly. Answer him briefly in "
             "his language. Do NOT translate this exchange to the other person.]"
+        )
+    if owner_voice is None:
+        return (
+            f"[Translate this turn: if it is in {target_lang}, render it in "
+            f"{OWNER_LANG}; if it is in Avazbek's language, render it in "
+            f"{target_lang}. Do not answer it — just translate.]"
         )
     if owner_voice:
         return f"[Avazbek speaking → render this in {target_lang}.]"
