@@ -48,7 +48,12 @@ class ChatMessage(BaseModel):
     #: the app only and not also echoed into the owner's Telegram DM (the
     #: app submits with ``chat_id == owner_id``, which collides with the
     #: Telegram DM). In-memory only; not persisted.
-    source: Literal["telegram", "app"] = Field(default="telegram", exclude=True)
+    #: ``"reminder"``/``"webhook"`` mark autonomous turns (scheduler / external
+    #: event), not a live user message — used to block autonomous screen/camera
+    #: reads so Nemo only reads when Avazbek explicitly asks.
+    source: Literal["telegram", "app", "reminder", "webhook"] = Field(
+        default="telegram", exclude=True
+    )
 
 
 class ControlAction(BaseModel):

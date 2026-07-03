@@ -28,6 +28,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 
 from . import tools as tools_pkg
+from .error_journal import log_error
 from .tools.base import BaseTool, ToolContext, ToolResult
 
 log = logging.getLogger(__name__)
@@ -102,8 +103,12 @@ def _make_wrapper(tool: BaseTool, db_logger):
                     await db_logger(
                         tool_name=tool.name,
                         args_json=json.dumps(kwargs, default=str),
-                        result_json=None if err else json.dumps(
-                            {"content": result.content, "data": result.data} if result else {},
+                        result_json=None
+                        if err
+                        else json.dumps(
+                            {"content": result.content, "data": result.data}
+                            if result
+                            else {},
                             default=str,
                         ),
                         error=err,
@@ -112,6 +117,10 @@ def _make_wrapper(tool: BaseTool, db_logger):
                 except Exception:  # pragma: no cover - audit must never crash a tool
                     log.exception("audit log failed for tool %s", tool.name)
         if result and result.is_error:
+            # Auto-journal every tool error so Nemo's failures surface in the daily log.
+            # Skip log_to_journal itself to avoid infinite recursion.
+            if tool.name != "log_to_journal":
+                log_error(f"tool/{tool.name}", result.content or "unknown error")
             # Raising here makes FastMCP report it as a tool error, which
             # Claude can see and react to.
             raise RuntimeError(result.content)
@@ -176,7 +185,9 @@ class McpServer:
         self._ctx = ctx
         self._db_logger = db_logger
         self.mcp, self.tools = build_fastmcp(
-            ctx, db_logger=db_logger, disabled=disabled,
+            ctx,
+            db_logger=db_logger,
+            disabled=disabled,
         )
         self._server: uvicorn.Server | None = None
         self._task = None

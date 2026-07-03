@@ -2,9 +2,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import '../app_version.dart';
 import '../models/chat_session.dart';
+import '../theme.dart';
 import '../widgets/panic_button.dart';
+import '../widgets/voice_orb.dart';
 import '../services/chat_storage.dart';
 import '../services/nemo_service.dart';
 import '../services/update_service.dart';
@@ -32,6 +33,25 @@ class _ChatListScreenState extends State<ChatListScreen> {
     _initVoice();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Wire update-prompt listener here so it's never called from build().
+    final updater = context.read<UpdateService>();
+    updater.addListener(_onUpdateChanged);
+  }
+
+  void _onUpdateChanged() {
+    _maybePromptUpdate(context.read<UpdateService>());
+  }
+
+  @override
+  void dispose() {
+    context.read<UpdateService>().removeListener(_onUpdateChanged);
+    _errorSub?.cancel();
+    super.dispose();
+  }
+
   Future<void> _initVoice() async {
     final voice = context.read<VoiceService>();
     final nemo = context.read<NemoService>();
@@ -45,32 +65,27 @@ class _ChatListScreenState extends State<ChatListScreen> {
       );
     });
     await nemo.connect();
-    await context.read<UpdateService>().checkForUpdate(nemo.serverUrl);
+    // Update check runs once at launch (main.dart, 5s delay). No repeat here.
 
-    // Edge TTS audio → play automatically
-    nemo.audioB64.listen((b64) => voice.playAudio(b64));
+    // TTS playback is wired app-globally in main.dart so proactive audio
+    // (reminders/briefings) plays on any screen — not duplicated here.
 
-    // Wake word → auto open voice chat
-    wake.onWakeWord = () async {
-      if (!mounted) return;
-      await wake.stop();
-      final host = _extractHost(nemo.serverUrl);
-      await Navigator.push(context, PageRouteBuilder(
-        pageBuilder: (_, __, ___) => VoiceChatScreen(serverHost: host, autoStart: true),
-        transitionDuration: const Duration(milliseconds: 150),
-        transitionsBuilder: (_, a, __, c) => FadeTransition(opacity: a, child: c),
-      ));
-      if (mounted) await wake.start();
-    };
-
+    // Wake word handling lives in main.dart (VoiceSessionController) so
+    // "hey nemo" works hands-free from ANY app — no UI navigation here.
     await Future.delayed(const Duration(milliseconds: 600));
     await wake.start();
   }
 
-  String _extractHost(String url) {
-    try { return Uri.parse(url).host; } catch (_) {
-      return url.replaceAll(RegExp(r'^wss?://'), '').split(':').first;
-    }
+  Future<void> _startVoice() async {
+    // The session is owned by VoiceSessionController; this screen is a view.
+    await Navigator.push(
+        context,
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const VoiceChatScreen(autoStart: true),
+          transitionDuration: const Duration(milliseconds: 250),
+          transitionsBuilder: (_, a, __, c) =>
+              FadeTransition(opacity: a, child: c),
+        ));
   }
 
   Future<void> _load() async {
@@ -109,12 +124,50 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 
   Future<void> _installUpdate() async {
+    final updater = context.read<UpdateService>();
     final url = context.read<NemoService>().serverUrl;
-    await context.read<UpdateService>().downloadAndInstall(url);
+    try {
+      // Hash-verified in-app download + install.
+      await updater.downloadAndInstall(url);
+    } catch (e) {
+      if (!mounted) return;
+      final fallback = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Verified install failed'),
+          content: Text(
+            '$e\n\nOpen the download in the browser instead? '
+            '(no hash verification on that path)',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Use browser'),
+            ),
+          ],
+        ),
+      );
+      if (fallback == true && mounted) {
+        try {
+          await updater.openDownloadInBrowser(url);
+        } catch (e2) {
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('$e2')));
+          }
+        }
+      }
+    }
   }
 
   void _maybePromptUpdate(UpdateService updater) {
-    if (_updatePromptShown || !updater.updateAvailable || updater.isDownloading) {
+    if (_updatePromptShown ||
+        !updater.updateAvailable ||
+        updater.isDownloading) {
       return;
     }
     _updatePromptShown = true;
@@ -123,13 +176,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
       final install = await showDialog<bool>(
         context: context,
         builder: (_) => AlertDialog(
-          backgroundColor: const Color(0xFF1E1E2E),
-          title: Text('Nemo v${updater.serverVersion} available',
-              style: const TextStyle(color: Colors.white)),
-          content: const Text(
-            'Install the latest Nemo APK now?',
-            style: TextStyle(color: Colors.white70),
-          ),
+          title: Text('Nemo v${updater.serverVersion} available'),
+          content: const Text('Install the latest Nemo APK now?'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context, false),
@@ -149,36 +197,44 @@ class _ChatListScreenState extends State<ChatListScreen> {
   Widget _updateBanner() {
     return Consumer<UpdateService>(
       builder: (_, updater, __) {
-        _maybePromptUpdate(updater);
         if (!updater.updateAvailable && !updater.isDownloading) {
           return const SizedBox.shrink();
         }
         return Container(
-          color: const Color(0xFF7C3AED),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+          decoration: BoxDecoration(
+            color: NemoColors.accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: NemoColors.accent.withValues(alpha: 0.4)),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
           child: updater.isDownloading
               ? Row(children: [
-                  const SizedBox(width: 14, height: 14,
+                  const SizedBox(
+                      width: 14,
+                      height: 14,
                       child: CircularProgressIndicator(
-                          strokeWidth: 2, color: Colors.white)),
+                          strokeWidth: 2, color: NemoColors.accent)),
                   const SizedBox(width: 10),
                   Text(
                     'Downloading ${(updater.downloadProgress * 100).toStringAsFixed(0)}%',
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style:
+                        const TextStyle(color: NemoColors.text, fontSize: 13),
                   ),
                 ])
               : Row(children: [
-                  const Icon(Icons.system_update, color: Colors.white, size: 18),
+                  const Icon(Icons.system_update,
+                      color: NemoColors.accent, size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text('Nemo v${updater.serverVersion} available',
-                        style: const TextStyle(color: Colors.white, fontSize: 13)),
+                        style: const TextStyle(
+                            color: NemoColors.text, fontSize: 13)),
                   ),
                   TextButton(
                     onPressed: _installUpdate,
                     child: const Text('Update',
-                        style: TextStyle(color: Colors.white,
-                            fontWeight: FontWeight.bold)),
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ]),
         );
@@ -197,36 +253,42 @@ class _ChatListScreenState extends State<ChatListScreen> {
     return DateFormat('dd/MM').format(t);
   }
 
+  void _openChats() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: NemoColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (_) => _ChatsSheet(
+        sessions: _sessions,
+        formatTime: _formatTime,
+        onOpen: (s) {
+          Navigator.pop(context);
+          _openChat(s);
+        },
+        onDelete: _deleteChat,
+        onNew: () {
+          Navigator.pop(context);
+          _newChat();
+        },
+      ),
+    ).then((_) => _load());
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0F0F1A),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0F0F1A),
-        elevation: 0,
-        title: Row(children: [
-          Container(
-            width: 32, height: 32,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              gradient: const LinearGradient(
-                colors: [Color(0xFF7C3AED), Color(0xFF3B82F6)],
-              ),
-            ),
-            child: const Center(
-              child: Text('N', style: TextStyle(color: Colors.white,
-                  fontWeight: FontWeight.bold, fontSize: 16)),
-            ),
-          ),
-          const SizedBox(width: 10),
-          const Text('Nemo $nemoVersionLabel',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-        ]),
+        title: const Text('NEMO',
+            style: TextStyle(letterSpacing: 4, fontWeight: FontWeight.w700)),
         actions: [
           const PanicButton(),
           const SizedBox(width: 4),
           IconButton(
-            icon: const Icon(Icons.settings_outlined),
+            icon:
+                const Icon(Icons.settings_outlined, color: NemoColors.textDim),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(builder: (_) => const SettingsScreen()),
@@ -236,90 +298,164 @@ class _ChatListScreenState extends State<ChatListScreen> {
       ),
       body: Column(children: [
         _updateBanner(),
+        // Orb + labels centered in all the space between the banner and the
+        // bottom button — dead center of the screen.
         Expanded(
-          child: _sessions.isEmpty
-              ? Center(
-                  child: Column(mainAxisSize: MainAxisSize.min, children: [
-                    const Text('👋', style: TextStyle(fontSize: 48)),
-                    const SizedBox(height: 16),
-                    const Text('No conversations yet',
-                        style: TextStyle(color: Colors.white38, fontSize: 16)),
-                    const SizedBox(height: 24),
-                    FilledButton.icon(
-                      onPressed: _newChat,
-                      icon: const Icon(Icons.add),
-                      label: const Text('Start a conversation'),
-                    ),
-                  ]),
-                )
-              : ListView.separated(
-                  itemCount: _sessions.length,
-                  separatorBuilder: (_, __) => const Divider(
-                      color: Color(0xFF1E1E2E), height: 1),
-                  itemBuilder: (_, i) {
-                    final s = _sessions[i];
-                    return Dismissible(
-                      key: Key(s.id),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 20),
-                        color: Colors.red.shade900,
-                        child: const Icon(Icons.delete_outline, color: Colors.white),
-                      ),
-                      onDismissed: (_) => _deleteChat(s),
-                      child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 6),
-                        leading: Container(
-                          width: 44, height: 44,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: const Color(0xFF1E1E2E),
-                            border: Border.all(
-                                color: const Color(0xFF7C3AED)
-                                    .withValues(alpha: 0.3)),
-                          ),
-                          child: const Icon(Icons.chat_bubble_outline,
-                              color: Color(0xFF7C3AED), size: 20),
-                        ),
-                        title: Text(
-                          s.title,
-                          style: const TextStyle(color: Colors.white,
-                              fontWeight: FontWeight.w500),
-                          maxLines: 1, overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: s.lastMessage.isNotEmpty
-                            ? Text(
-                                s.lastMessage,
-                                style: const TextStyle(color: Colors.white38,
-                                    fontSize: 13),
-                                maxLines: 1, overflow: TextOverflow.ellipsis,
-                              )
-                            : null,
-                        trailing: Text(
-                          _formatTime(s.updatedAt),
-                          style: const TextStyle(color: Colors.white38,
-                              fontSize: 12),
-                        ),
-                        onTap: () => _openChat(s),
-                      ),
-                    );
-                  },
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                VoiceOrb(state: OrbState.idle, size: 250, onTap: _startVoice),
+                const SizedBox(height: 44),
+                const Text(
+                  'Tap to talk to Nemo',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: NemoColors.text,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.4,
+                  ),
                 ),
+                const SizedBox(height: 8),
+                const Text(
+                  'or just say "Hey Nemo"',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: NemoColors.textFaint, fontSize: 14),
+                ),
+              ],
+            ),
+          ),
         ),
+        _chatsButton(),
+        const SizedBox(height: 24),
       ]),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _newChat,
-        backgroundColor: const Color(0xFF7C3AED),
-        child: const Icon(Icons.add, color: Colors.white),
+    );
+  }
+
+  Widget _chatsButton() {
+    final count = _sessions.length;
+    return TextButton.icon(
+      onPressed: _openChats,
+      icon:
+          const Icon(Icons.forum_outlined, size: 18, color: NemoColors.textDim),
+      label: Text(
+        count == 0 ? 'Text chats' : 'Text chats ($count)',
+        style: const TextStyle(color: NemoColors.textDim, fontSize: 14),
       ),
     );
   }
 
+}
+
+/// Secondary, tucked-away list of text conversations.
+class _ChatsSheet extends StatelessWidget {
+  final List<ChatSession> sessions;
+  final String Function(DateTime) formatTime;
+  final void Function(ChatSession) onOpen;
+  final Future<void> Function(ChatSession) onDelete;
+  final VoidCallback onNew;
+
+  const _ChatsSheet({
+    required this.sessions,
+    required this.formatTime,
+    required this.onOpen,
+    required this.onDelete,
+    required this.onNew,
+  });
+
   @override
-  void dispose() {
-    _errorSub?.cancel();
-    super.dispose();
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: NemoColors.border,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 12, 4),
+            child: Row(children: [
+              const Text('Text chats',
+                  style: TextStyle(
+                      color: NemoColors.text,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600)),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: onNew,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('New'),
+              ),
+            ]),
+          ),
+          Flexible(
+            child: sessions.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 48),
+                    child: Text('No text chats yet',
+                        style: TextStyle(color: NemoColors.textFaint)),
+                  )
+                : ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.only(bottom: 12),
+                    itemCount: sessions.length,
+                    separatorBuilder: (_, __) =>
+                        const Divider(color: NemoColors.border, height: 1),
+                    itemBuilder: (_, i) => _tile(sessions[i]),
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tile(ChatSession s) {
+    return Dismissible(
+      key: Key(s.id),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        color: NemoColors.danger.withValues(alpha: 0.8),
+        child: const Icon(Icons.delete_outline, color: Colors.white),
+      ),
+      onDismissed: (_) => onDelete(s),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+        leading: Container(
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: NemoColors.bg,
+            border: Border.all(color: NemoColors.accent.withValues(alpha: 0.3)),
+          ),
+          child: const Icon(Icons.chat_bubble_outline,
+              color: NemoColors.accent, size: 18),
+        ),
+        title: Text(s.title,
+            style: const TextStyle(
+                color: NemoColors.text, fontWeight: FontWeight.w500),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis),
+        subtitle: s.lastMessage.isNotEmpty
+            ? Text(s.lastMessage,
+                style:
+                    const TextStyle(color: NemoColors.textFaint, fontSize: 13),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis)
+            : null,
+        trailing: Text(formatTime(s.updatedAt),
+            style: const TextStyle(color: NemoColors.textFaint, fontSize: 12)),
+        onTap: () => onOpen(s),
+      ),
+    );
   }
 }

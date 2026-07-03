@@ -24,12 +24,48 @@ from .base import BaseTool, ToolResult
 
 log = logging.getLogger(__name__)
 
-_VALID_COMMANDS = frozenset([
-    "status", "list_apps", "screenshot", "camera", "ui_tree",
-    "tap", "swipe", "type", "press", "open",
-])
+_VALID_COMMANDS = frozenset(
+    [
+        "status",
+        "list_apps",
+        "screenshot",
+        "camera",
+        "ui_tree",
+        "tap",
+        "swipe",
+        "type",
+        "press",
+        "open",
+        "media",
+        "call",
+    ]
+)
 
 _PRESS_MAP = {"back": "back", "home": "home", "recents": "recents"}
+
+# Reads that extract on-screen / camera content. Allowed ONLY in direct
+# response to a live user request — never on a scheduler-fired (briefing/
+# reminder) turn — so Nemo can't capture the phone on its own.
+_READ_VERBS = frozenset({"screenshot", "ui_tree", "camera"})
+
+# Media transport actions accepted by the `media` verb — they map to the
+# device's AudioManager media-key / volume handling.
+_MEDIA_ACTIONS = frozenset(
+    {
+        "play",
+        "pause",
+        "play_pause",
+        "playpause",
+        "toggle",
+        "next",
+        "previous",
+        "prev",
+        "stop",
+        "volume_up",
+        "volume_down",
+        "mute",
+    }
+)
 
 
 class PhoneActionArgs(BaseModel):
@@ -48,7 +84,10 @@ class PhoneActionTool(BaseTool):
         "Control the owner's Android phone. One tool for everything: "
         "screenshot (returns image), camera, tap, swipe, type, press, "
         "open app, ui_tree (read screen), list_apps, status. "
-        "Use status first to check connection. Use screenshot to see the screen."
+        "Use status first to check connection. "
+        "PRIVACY: screenshot, ui_tree, and camera READ the owner's screen/"
+        "surroundings — only use them when the owner explicitly asked you to "
+        "look at something in this turn, never on your own or during a reminder."
     )
     args_model = PhoneActionArgs
 
@@ -72,25 +111,56 @@ class PhoneActionTool(BaseTool):
                 is_error=True,
             )
 
-        log.info("phone_action: %r", cmd[:80])
-        result = await broker.send_action(cmd)
-
-        if not result.get("ok"):
+        # Privacy gate: never read the screen/camera unless a live user asked.
+        if verb in _READ_VERBS and not getattr(self.ctx, "user_initiated", True):
+            log.warning("blocked autonomous read '%s' (not user-initiated)", verb)
             return ToolResult(
-                content=f"phone error: {result.get('error', 'unknown')}",
+                content=(
+                    f"'{verb}' is a screen/camera read and is only allowed when "
+                    "Avazbek explicitly asks — not during a reminder or on your own."
+                ),
+                is_error=False,
+            )
+
+        # Validate `media <action>` against the allowlist so a typo isn't sent
+        # to the device as an opaque command.
+        if verb == "media":
+            parts = cmd.split()
+            action = parts[1].lower() if len(parts) > 1 else ""
+            if action not in _MEDIA_ACTIONS:
+                return ToolResult(
+                    content=(
+                        f"unknown media action '{action}'. valid: "
+                        f"{', '.join(sorted(_MEDIA_ACTIONS))}"
+                    ),
+                    is_error=True,
+                )
+
+        # `call <number-or-contact>` needs a target. The device opens the dialer
+        # pre-filled (safe default — the owner taps to place the call).
+        if verb == "call" and len(cmd.split()) < 2:
+            return ToolResult(
+                content="call needs a number or contact name, e.g. 'call Aziz'",
                 is_error=True,
             )
 
-        # Image result — return as vision block so CC can see it
-        if result.get("image_path"):
-            path = Path(result["image_path"])
-            if path.exists():
-                return ToolResult(
-                    content=f"image captured: {path.name}",
-                    image_path=path,
-                )
-            return ToolResult(content="image file missing after capture", is_error=True)
+        log.info("phone_action: %r", cmd[:80])
+        result = await broker.send_action(cmd)
+        return _format_result(result)
 
-        # Text result
-        text = result.get("text") or result.get("data") or "ok"
-        return ToolResult(content=str(text)[:4000])
+
+def _format_result(result: dict) -> ToolResult:
+    """Turn a broker response into a ToolResult (error / image / text)."""
+    if not result.get("ok"):
+        return ToolResult(
+            content=f"phone error: {result.get('error', 'unknown')}",
+            is_error=True,
+        )
+    # Image result — return as a vision block so CC can see it.
+    if result.get("image_path"):
+        path = Path(result["image_path"])
+        if path.exists():
+            return ToolResult(content=f"image captured: {path.name}", image_path=path)
+        return ToolResult(content="image file missing after capture", is_error=True)
+    text = result.get("text") or result.get("data") or "ok"
+    return ToolResult(content=str(text)[:4000])

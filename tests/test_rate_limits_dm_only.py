@@ -43,7 +43,9 @@ def _cfg(tmp_path: Path) -> Config:
     return cfg
 
 
-def _make_update(*, user_id: int, chat_id: int, chat_type: str, message_id: int = 1) -> MagicMock:
+def _make_update(
+    *, user_id: int, chat_id: int, chat_type: str, message_id: int = 1
+) -> MagicMock:
     """A MagicMock stand-in for a telegram Update, wired to the minimum
     surface the dispatcher reads."""
     user = MagicMock()
@@ -78,7 +80,9 @@ def _make_update(*, user_id: int, chat_id: int, chat_type: str, message_id: int 
     return update
 
 
-def _dispatcher(cfg: Config, db: Database, rate_limiter: RateLimiter) -> TelegramDispatcher:
+def _dispatcher(
+    cfg: Config, db: Database, rate_limiter: RateLimiter
+) -> TelegramDispatcher:
     return TelegramDispatcher(
         cfg,
         db,
@@ -119,14 +123,18 @@ async def test_dm_spammer_is_rate_limited(tmp_path: Path) -> None:
         # First 2 DMs from a non-owner go through.
         for mid in (1, 2):
             await dispatcher._on_message(
-                _make_update(user_id=USER, chat_id=DM_CHAT, chat_type="private", message_id=mid),
+                _make_update(
+                    user_id=USER, chat_id=DM_CHAT, chat_type="private", message_id=mid
+                ),
                 None,
             )
         assert dispatcher.engine.submit.await_count == 2
 
         # 3rd exceeds the limit — engine is NOT called, notice IS sent.
         await dispatcher._on_message(
-            _make_update(user_id=USER, chat_id=DM_CHAT, chat_type="private", message_id=3),
+            _make_update(
+                user_id=USER, chat_id=DM_CHAT, chat_type="private", message_id=3
+            ),
             None,
         )
         assert dispatcher.engine.submit.await_count == 2
@@ -151,7 +159,10 @@ async def test_group_spammer_is_not_rate_limited(tmp_path: Path) -> None:
         for mid in range(1, 6):
             await dispatcher._on_message(
                 _make_update(
-                    user_id=USER, chat_id=GROUP_CHAT, chat_type="supergroup", message_id=mid,
+                    user_id=USER,
+                    chat_id=GROUP_CHAT,
+                    chat_type="supergroup",
+                    message_id=mid,
                 ),
                 None,
             )
@@ -180,7 +191,10 @@ async def test_owner_bypasses_rate_limiter_in_dm(tmp_path: Path) -> None:
         for mid in range(1, 11):
             await dispatcher._on_message(
                 _make_update(
-                    user_id=OWNER, chat_id=OWNER, chat_type="private", message_id=mid,
+                    user_id=OWNER,
+                    chat_id=OWNER,
+                    chat_type="private",
+                    message_id=mid,
                 ),
                 None,
             )

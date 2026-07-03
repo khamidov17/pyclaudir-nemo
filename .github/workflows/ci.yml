@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync deps
+        run: uv sync
+
+      - name: Lint (ruff)
+        run: |
+          uv run ruff check pyclaudir nemo-voice/server
+          uv run ruff format --check pyclaudir
+
+      - name: Engine tests
+        run: uv run pytest -q
+
+      - name: Voice tests
+        run: uv run pytest nemo-voice/server/tests -q
+
+      # Import smoke — the exact check the deploy script runs on the server, so a
+      # missing dep / bad import (e.g. voice_brain without `vision`) fails CI, not prod.
+      - name: Import smoke
+        run: |
+          uv run python -c "import pyclaudir.tools, pyclaudir.engine.engine, pyclaudir.code_sandbox"
+          cd nemo-voice/server && uv run python -c "import voice_brain, qwen_realtime, streaming_service"

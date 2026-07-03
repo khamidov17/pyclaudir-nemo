@@ -268,7 +268,7 @@ class NemoRouter:
             for phrase in patterns:
                 idx = lower.find(phrase)
                 if idx != -1:
-                    text = text[:idx] + text[idx + len(phrase):]
+                    text = text[:idx] + text[idx + len(phrase) :]
                     lower = text.lower()
                     break
         return re.sub(r"\s+", " ", text).strip()

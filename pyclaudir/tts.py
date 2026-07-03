@@ -22,8 +22,10 @@ import urllib.request
 
 log = logging.getLogger("pyclaudir.tts")
 
-_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("GOOGLE_API_KEY", "")
-_VOICE = os.environ.get("NEMO_TTS_VOICE", "Kore")          # Gemini voice
+_GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get(
+    "GOOGLE_API_KEY", ""
+)
+_VOICE = os.environ.get("NEMO_TTS_VOICE", "Kore")  # Gemini voice
 _EDGE_VOICE = os.environ.get("NEMO_TTS_EDGE_VOICE", "en-US-AriaNeural")
 _ENABLED = os.environ.get("NEMO_TTS_ENABLED", "true").lower() in {"1", "true", "yes"}
 
@@ -69,33 +71,35 @@ async def speak_to_app(text: str, app_clients: set) -> None:
 
 # ── Gemini TTS ─────────────────────────────────────────────────────────────
 
+
 def _gemini_to_ogg(text: str) -> bytes:
     """Gemini TTS → PCM → OGG Opus via ffmpeg. Mirrors claudir-main tts.rs."""
     if len(text) < 10:
         text = text + "."
 
-    payload = json.dumps({
-        "contents": [{"parts": [{"text": text}]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": _VOICE}}
+    payload = json.dumps(
+        {
+            "contents": [{"parts": [{"text": text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": _VOICE}}
+                },
             },
-        },
-    }).encode()
+        }
+    ).encode()
 
     url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.5-flash-preview-tts:generateContent?key={_GEMINI_KEY}"
     )
-    req = urllib.request.Request(url, data=payload,
-                                  headers={"Content-Type": "application/json"})
+    req = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}
+    )
     with urllib.request.urlopen(req, timeout=30) as resp:
         result = json.loads(resp.read())
 
-    audio_b64 = (
-        result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
-    )
+    audio_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
     pcm = base64.b64decode(audio_b64)
     return _pcm_to_ogg(pcm, 24000)
 
@@ -106,9 +110,26 @@ def _pcm_to_ogg(pcm: bytes, sample_rate: int = 24000) -> bytes:
         out = f.name
     try:
         r = subprocess.run(
-            ["ffmpeg", "-y", "-f", "s16le", "-ar", str(sample_rate), "-ac", "1",
-             "-i", "pipe:0", "-c:a", "libopus", "-b:a", "24k", out],
-            input=pcm, capture_output=True, timeout=30,
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "s16le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "24k",
+                out,
+            ],
+            input=pcm,
+            capture_output=True,
+            timeout=30,
         )
         if r.returncode != 0:
             raise RuntimeError(r.stderr.decode()[:200])
@@ -125,7 +146,9 @@ def _mp3_to_ogg(mp3: bytes) -> bytes:
     try:
         r = subprocess.run(
             ["ffmpeg", "-y", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "24k", out],
-            input=mp3, capture_output=True, timeout=30,
+            input=mp3,
+            capture_output=True,
+            timeout=30,
         )
         if r.returncode != 0:
             raise RuntimeError(r.stderr.decode()[:200])
@@ -136,6 +159,7 @@ def _mp3_to_ogg(mp3: bytes) -> bytes:
 
 
 # ── Edge TTS ───────────────────────────────────────────────────────────────
+
 
 async def _edge_mp3(text: str) -> bytes:
     try:

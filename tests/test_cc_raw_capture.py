@@ -20,7 +20,9 @@ from pyclaudir.cc_worker import CcSpawnSpec, CcWorker
 from pyclaudir.config import Config
 
 
-def _spec(tmp_path: Path, *, with_logs: bool, session_id: str | None = None) -> CcSpawnSpec:
+def _spec(
+    tmp_path: Path, *, with_logs: bool, session_id: str | None = None
+) -> CcSpawnSpec:
     sp = tmp_path / "system.md"
     sp.write_text("system")
     mcp = tmp_path / "mcp.json"
@@ -62,11 +64,13 @@ def test_capture_pending_then_renamed_on_init(tmp_path: Path) -> None:
     worker._write_stderr_line("warming up")
 
     # System init event arrives → triggers rename
-    worker._handle_event({
-        "type": "system",
-        "subtype": "init",
-        "session_id": "abc-123-xyz",
-    })
+    worker._handle_event(
+        {
+            "type": "system",
+            "subtype": "init",
+            "session_id": "abc-123-xyz",
+        }
+    )
 
     assert worker._stream_log_path is not None
     assert worker._stream_log_path.name == "abc-123-xyz.stream.jsonl"

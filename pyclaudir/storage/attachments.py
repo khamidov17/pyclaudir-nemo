@@ -32,9 +32,27 @@ MAX_TEXT_BYTES = 64 * 1024
 
 _IMAGE_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
 _TEXT_EXTS = {
-    "md", "txt", "log", "csv", "json", "yaml", "yml", "toml",
-    "ini", "conf", "py", "js", "ts", "tsx", "jsx", "html", "css",
-    "sh", "sql", "xml", "rst",
+    "md",
+    "txt",
+    "log",
+    "csv",
+    "json",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "conf",
+    "py",
+    "js",
+    "ts",
+    "tsx",
+    "jsx",
+    "html",
+    "css",
+    "sh",
+    "sql",
+    "xml",
+    "rst",
 }
 _IMAGE_MIME = {
     "jpg": "image/jpeg",
@@ -127,7 +145,9 @@ class AttachmentStore:
             return "pdf"
         return "unsupported"
 
-    def read_text(self, relative: str, max_bytes: int = MAX_TEXT_BYTES) -> TextAttachment:
+    def read_text(
+        self, relative: str, max_bytes: int = MAX_TEXT_BYTES
+    ) -> TextAttachment:
         """Read a text-like attachment as UTF-8.
 
         Files larger than ``max_bytes`` are truncated; the caller may surface
@@ -152,7 +172,9 @@ class AttachmentStore:
             text += f"\n\n[truncated to {max_bytes} bytes of {size} total]"
         return TextAttachment(text=text, truncated=truncated, size_bytes=size)
 
-    def read_pdf(self, relative: str, max_bytes: int = MAX_TEXT_BYTES) -> TextAttachment:
+    def read_pdf(
+        self, relative: str, max_bytes: int = MAX_TEXT_BYTES
+    ) -> TextAttachment:
         """Extract text from a PDF attachment via ``pypdf``.
 
         Pages are joined with ``--- page N ---`` markers so the model can

@@ -65,11 +65,13 @@ async def test_dropped_text_triggers_corrective_send() -> None:
         assert len(worker.sent) == 1
 
         # Worker reports dropped text (model wrote text but never called send_message)
-        worker.feed(TurnResult(
-            text_blocks=["I would say hi"],
-            control=None,
-            dropped_text=True,
-        ))
+        worker.feed(
+            TurnResult(
+                text_blocks=["I would say hi"],
+                control=None,
+                dropped_text=True,
+            )
+        )
         # Give the control loop a moment to process the result
         await asyncio.sleep(0.05)
 
@@ -113,11 +115,13 @@ async def test_dropped_text_retry_limit_notifies_user() -> None:
             "It may not exist or you may not have access to it."
         )
         for _ in range(max_retries):
-            worker.feed(TurnResult(
-                text_blocks=[diagnostic],
-                control=None,
-                dropped_text=True,
-            ))
+            worker.feed(
+                TurnResult(
+                    text_blocks=[diagnostic],
+                    control=None,
+                    dropped_text=True,
+                )
+            )
             await asyncio.sleep(0.05)
 
         # (max_retries - 1) corrective injections below the cap, then the
@@ -159,14 +163,21 @@ async def test_dropped_text_counter_resets_on_new_turn() -> None:
 
         # Drop below the cap, then a clean stop.
         for _ in range(below_cap):
-            worker.feed(TurnResult(
-                text_blocks=["oops"], control=None, dropped_text=True,
-            ))
+            worker.feed(
+                TurnResult(
+                    text_blocks=["oops"],
+                    control=None,
+                    dropped_text=True,
+                )
+            )
             await asyncio.sleep(0.05)
-        worker.feed(TurnResult(
-            text_blocks=[], control=ControlAction(action="stop", reason="ok"),
-            dropped_text=False,
-        ))
+        worker.feed(
+            TurnResult(
+                text_blocks=[],
+                control=ControlAction(action="stop", reason="ok"),
+                dropped_text=False,
+            )
+        )
         await asyncio.sleep(0.05)
 
         # No user notification yet — counter stayed below threshold.
@@ -178,9 +189,13 @@ async def test_dropped_text_counter_resets_on_new_turn() -> None:
         await eng.submit(_msg("again", mid=2))
         await asyncio.sleep(0.08)
         for _ in range(below_cap):
-            worker.feed(TurnResult(
-                text_blocks=["oops"], control=None, dropped_text=True,
-            ))
+            worker.feed(
+                TurnResult(
+                    text_blocks=["oops"],
+                    control=None,
+                    dropped_text=True,
+                )
+            )
             await asyncio.sleep(0.05)
 
         assert notifications == []
@@ -207,11 +222,13 @@ async def test_inject_drained_between_turns_when_pending() -> None:
         assert "mid-a" in joined and "mid-b" in joined
 
         # Turn finishes cleanly with stop
-        worker.feed(TurnResult(
-            text_blocks=[],
-            control=ControlAction(action="stop", reason="ok"),
-            dropped_text=False,
-        ))
+        worker.feed(
+            TurnResult(
+                text_blocks=[],
+                control=ControlAction(action="stop", reason="ok"),
+                dropped_text=False,
+            )
+        )
         await asyncio.sleep(0.05)
     finally:
         await eng.stop()

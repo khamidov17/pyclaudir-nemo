@@ -1,8 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:uuid/uuid.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/status.dart' as status;
+import 'secure_net.dart';
+
+const _storage = FlutterSecureStorage(
+  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+);
 
 enum NemoState { disconnected, connecting, connected, thinking }
 
@@ -13,6 +21,7 @@ class NemoService extends ChangeNotifier {
   Completer<void>? _connectAck;
   bool _manualDisconnect = false;
   Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
 
   String _serverUrl = '';
   String _token = '';
@@ -26,6 +35,10 @@ class NemoService extends ChangeNotifier {
   // Incoming Nemo text replies
   final StreamController<String> _messages = StreamController.broadcast();
   Stream<String> get messages => _messages.stream;
+  // Small buffer of recent messages — replayed by ChatScreen on re-entry so
+  // a reply that arrived after the user navigated away is not lost (FLOW-03/chat).
+  final List<String> messageBuffer = [];
+  static const _messageBufferCap = 20;
 
   final StreamController<String> _errors = StreamController.broadcast();
   Stream<String> get errors => _errors.stream;
@@ -42,10 +55,20 @@ class NemoService extends ChangeNotifier {
   void configure(String serverUrl, String token, {String deviceId = ''}) {
     _serverUrl = serverUrl;
     _token = token;
-    _deviceId = deviceId.isNotEmpty
-        ? deviceId
-        : 'phone-${DateTime.now().millisecondsSinceEpoch}';
+    if (deviceId.isNotEmpty) _deviceId = deviceId;
+    // deviceId is loaded lazily from secure storage on first connect().
     _manualDisconnect = false;
+  }
+
+  Future<String> _ensureDeviceId() async {
+    if (_deviceId.isNotEmpty) return _deviceId;
+    var id = await _storage.read(key: 'nemo_device_id') ?? '';
+    if (id.isEmpty) {
+      id = const Uuid().v4();
+      await _storage.write(key: 'nemo_device_id', value: id);
+    }
+    _deviceId = id;
+    return id;
   }
 
   Future<void> connect() async {
@@ -63,9 +86,14 @@ class NemoService extends ChangeNotifier {
     _setState(NemoState.connecting);
 
     try {
-      // Token sent in first message, not URL — avoids proxy/log leakage
+      // Token sent in first message, not URL — avoids proxy/log leakage.
+      // wss:// uses the pinned self-signed server cert (SecureNet).
       final uri = _wsUri();
-      _channel = WebSocketChannel.connect(uri);
+      _channel = IOWebSocketChannel.connect(
+        uri,
+        customClient: await SecureNet.httpClient(),
+        pingInterval: const Duration(seconds: 20),
+      );
       await _channel!.ready;
       // Stay "connecting" until the server's auth-gated "connected" frame
       // arrives. Showing connected here (before token validation) made a
@@ -75,7 +103,7 @@ class NemoService extends ChangeNotifier {
       _channel!.sink.add(jsonEncode({
         'type': 'auth',
         'token': _token,
-        'device_id': _deviceId,
+        'device_id': await _ensureDeviceId(),
       }));
 
       _connectAck = Completer<void>();
@@ -99,6 +127,7 @@ class NemoService extends ChangeNotifier {
 
       switch (type) {
         case 'connected':
+          _reconnectAttempts = 0;
           _setState(NemoState.connected);
           if (_connectAck != null && !_connectAck!.isCompleted) {
             _connectAck!.complete();
@@ -107,6 +136,8 @@ class NemoService extends ChangeNotifier {
         case 'message':
           final text = data['text'] as String? ?? '';
           if (text.isNotEmpty) {
+            messageBuffer.add(text);
+            if (messageBuffer.length > _messageBufferCap) messageBuffer.removeAt(0);
             _messages.add(text);
             _setState(NemoState.connected);
           }
@@ -114,10 +145,14 @@ class NemoService extends ChangeNotifier {
         case 'audio':
           // Edge TTS audio from backend — base64 MP3
           final b64 = data['data'] as String? ?? '';
-          if (b64.isNotEmpty) _audio.add(b64);
+          if (b64.isNotEmpty) {
+            if (_state == NemoState.thinking) _setState(NemoState.connected);
+            _audio.add(b64);
+          }
 
         case 'action':
           // Backend wants phone to do something
+          if (_state == NemoState.thinking) _setState(NemoState.connected);
           _actions.add(data);
 
         default:
@@ -181,10 +216,16 @@ class NemoService extends ChangeNotifier {
   Uri _wsUri() {
     final base = Uri.parse(_serverUrl.trim());
     final path = base.path.endsWith('/ws') ? base.path : '${base.path}/ws';
-    return base.replace(path: path, queryParameters: {
-      ...base.queryParameters,
-      'device_id': _deviceId,
-    });
+    return base.replace(
+      // Force TLS: never connect in cleartext, even if an old stored URL says
+      // ws://. The server is wss-only; SecureNet pins the cert.
+      scheme: 'wss',
+      path: path,
+      // Strip auth-related query params — token travels in the first WS message only.
+      queryParameters: base.queryParameters.isEmpty ? null
+          : (Map.of(base.queryParameters)..removeWhere(
+              (k, _) => k == 'token' || k == 'auth' || k == 'key')),
+    );
   }
 
   void _handleDisconnect(String? reason) {
@@ -200,7 +241,9 @@ class NemoService extends ChangeNotifier {
     if (reason != null) _errors.add(reason);
     if (!_manualDisconnect && isConfigured) {
       _reconnectTimer?.cancel();
-      _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      final delayMs = (5000 * (1 << _reconnectAttempts.clamp(0, 3))).clamp(5000, 60000);
+      _reconnectAttempts++;
+      _reconnectTimer = Timer(Duration(milliseconds: delayMs), () {
         if (_state == NemoState.disconnected) connect();
       });
     }
@@ -208,6 +251,7 @@ class NemoService extends ChangeNotifier {
 
   void disconnect() {
     _manualDisconnect = true;
+    _reconnectAttempts = 0;
     _reconnectTimer?.cancel();
     _handleDisconnect(null);
   }

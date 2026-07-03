@@ -1,7 +1,7 @@
 name: nemo_app
 description: Nemo — your private AI assistant on Android & iOS
 publish_to: none
-version: 1.0.25+25
+version: 1.0.58+58
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -16,11 +16,18 @@ dependencies:
   # Speech-to-text — wake word + voice input, device-native, no API key
   speech_to_text: ^7.0.0
 
+  # Wake word is now native openWakeWord (ONNX) in android/app — see
+  # WakeWordController.kt + lib/services/wake_word_service.dart. The old Vosk
+  # plugin (plugins/vosk_flutter_2) is no longer a dependency.
+
   # Text-to-speech for Nemo's replies
   flutter_tts: ^4.2.2
 
   # Permissions
   permission_handler: ^11.3.1
+
+  # GPS stream for Nemo voice guidance (nav_start/nav_stop)
+  geolocator: ^13.0.1
 
   # Persist server URL + token
   shared_preferences: ^2.3.0

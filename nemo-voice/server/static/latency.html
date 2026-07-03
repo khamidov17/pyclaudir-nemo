@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nemo Voice — TTFSW Latency</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background: #0f1115; color: #e6e6e6; }
+    h1 { font-size: 18px; font-weight: 600; }
+    #token { width: 320px; padding: 6px; background: #1a1d24; color: #e6e6e6; border: 1px solid #333; border-radius: 4px; }
+    button { padding: 6px 12px; margin-left: 8px; background: #2a2f3a; color: #e6e6e6; border: 1px solid #444; border-radius: 4px; cursor: pointer; }
+    #chart { display: flex; align-items: flex-end; gap: 4px; height: 320px; margin-top: 24px; border-bottom: 1px solid #333; padding-bottom: 2px; }
+    .bar { width: 16px; min-height: 2px; border-radius: 2px 2px 0 0; position: relative; }
+    .bar:hover::after { content: attr(data-label); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); white-space: nowrap; background: #000; padding: 2px 6px; font-size: 11px; border-radius: 3px; }
+    .t0 { background: #3fb950; } .t1 { background: #d29922; } .t2 { background: #f85149; }
+    .legend { margin-top: 16px; font-size: 13px; }
+    .legend span { display: inline-block; width: 12px; height: 12px; margin: 0 4px 0 14px; vertical-align: middle; border-radius: 2px; }
+    #err { color: #f85149; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Nemo Voice — Time-To-First-Spoken-Word</h1>
+  <div>
+    <input id="token" type="password" placeholder="VOICE_INTERNAL_TOKEN" />
+    <button id="load">Load</button>
+  </div>
+  <div id="err"></div>
+  <div id="chart"></div>
+  <div class="legend">
+    <span class="t0"></span>T0 (tier0)
+    <span class="t1"></span>T1 (tier1)
+    <span class="t2"></span>T2 (engine)
+  </div>
+  <script>
+    function tierClass(tier) {
+      var t = (tier || "").toLowerCase();
+      if (t.indexOf("2") >= 0 || t.indexOf("engine") >= 0) return "t2";
+      if (t.indexOf("1") >= 0) return "t1";
+      return "t0";
+    }
+    function render(rows) {
+      var chart = document.getElementById("chart");
+      chart.innerHTML = "";
+      if (!rows.length) { chart.textContent = "no data"; return; }
+      var max = Math.max.apply(null, rows.map(function (r) { return r.ms; }));
+      rows.slice().reverse().forEach(function (r) {
+        var bar = document.createElement("div");
+        bar.className = "bar " + tierClass(r.tier);
+        bar.style.height = Math.max(2, (r.ms / max) * 300) + "px";
+        bar.setAttribute("data-label", Math.round(r.ms) + "ms · " + r.tier);
+        chart.appendChild(bar);
+      });
+    }
+    function load() {
+      var token = document.getElementById("token").value.trim();
+      var err = document.getElementById("err");
+      err.textContent = "";
+      fetch("/debug/latency", { headers: { Authorization: "Bearer " + token } })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error("HTTP " + resp.status);
+          return resp.json();
+        })
+        .then(function (data) { render(data.rows || []); })
+        .catch(function (e) { err.textContent = "Error: " + e.message; });
+    }
+    document.getElementById("load").addEventListener("click", load);
+    load();
+  </script>
+</body>
+</html>

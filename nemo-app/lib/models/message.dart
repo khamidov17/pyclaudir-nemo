@@ -39,7 +39,10 @@ class Message {
     id: m['id'] as String,
     sessionId: m['session_id'] as String,
     text: m['text'] as String,
-    sender: Sender.values.firstWhere((s) => s.name == m['sender']),
+    sender: Sender.values.firstWhere(
+      (s) => s.name == m['sender'],
+      orElse: () => Sender.nemo,
+    ),
     time: DateTime.fromMillisecondsSinceEpoch(m['time'] as int),
     type: MessageType.values.firstWhere(
       (t) => t.name == m['type'],

@@ -109,9 +109,72 @@ TOOL_MODULES: tuple[ToolModule, ...] = (
         tools=("mcp__pyclaudir__send_voice_message",),
     ),
     ToolModule(
+        name="recordings",
+        keywords=(
+            "recording",
+            "recorded",
+            "transcript",
+            "transcribe",
+            "meeting",
+            "summarize",
+            "recap",
+        ),
+        tools=(
+            "mcp__pyclaudir__list_recordings",
+            "mcp__pyclaudir__read_transcript",
+        ),
+    ),
+    ToolModule(
         name="query",
         keywords=("database", "query", "sql", "db", "history", "messages"),
         tools=("mcp__pyclaudir__query_db",),
+    ),
+    ToolModule(
+        name="assistant_tools",
+        keywords=(
+            # calculation — natural phrasings, not just "calculate"
+            "calculate",
+            "calculator",
+            "compute",
+            "math",
+            "arithmetic",
+            "percent",
+            "%",
+            "square root",
+            "sqrt",
+            "how much is",
+            "how many",
+            "times",
+            "divided by",
+            "plus",
+            "minus",
+            "tip",
+            "tax",
+            # unit conversion — the unit words themselves, so "5 miles in km" hits
+            "convert",
+            "conversion",
+            "units",
+            " in km",
+            " in miles",
+            " in kg",
+            " in lbs",
+            "celsius",
+            "fahrenheit",
+            "kelvin",
+            "kph",
+            "mph",
+            # time
+            "timezone",
+            "time zone",
+            "time in",
+            "world time",
+            "what time",
+        ),
+        tools=(
+            "mcp__pyclaudir__calculate",
+            "mcp__pyclaudir__convert_units",
+            "mcp__pyclaudir__world_time",
+        ),
     ),
     ToolModule(
         name="web",
@@ -125,6 +188,21 @@ TOOL_MODULES: tuple[ToolModule, ...] = (
             "news",
         ),
         tools=("WebFetch", "WebSearch"),
+    ),
+    ToolModule(
+        name="code",
+        keywords=(
+            "code",
+            "run code",
+            "script",
+            "python",
+            "calculate",
+            "compute",
+            "program",
+            "debug",
+        ),
+        # Sandboxed execution (sandbox0) — the host shell stays disabled.
+        tools=("mcp__pyclaudir__run_code",),
     ),
 )
 
@@ -150,7 +228,7 @@ INTENT_TOOLS: dict[str, tuple[str, ...]] = {
         "mcp__pyclaudir__send_photo",
         "mcp__pyclaudir__read_attachment",
     ),
-    "CODEX": ("mcp__codex",),
+    "CODEX": ("mcp__codex", "mcp__pyclaudir__run_code"),
     "FULL_NEMO": (
         "mcp__pyclaudir__search_memories",
         "mcp__pyclaudir__read_memory",
@@ -176,16 +254,40 @@ def build_allowed_tools(text: str, base: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(sorted(combined))
 
 
+# Tools that can control the phone or read the message/SQL store. Keyword
+# detection alone must never expose these to a non-owner: even if the access
+# policy is loosened to allowlist/open, only the owner's own messages may
+# summon them, so a crafted group message can't prompt-inject phone control.
+OWNER_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "mcp__pyclaudir__phone_action",
+        "mcp__pyclaudir__query_db",
+        # Sandboxed, but still: only the owner's own words may run code, so a
+        # crafted group message can't summon execution even if access loosens.
+        "mcp__pyclaudir__run_code",
+    }
+)
+
+
 def build_turn_tools(
     text: str,
     *,
     intent: str = "FULL_NEMO",
     external_tools: tuple[str, ...] = (),
     base: tuple[str, ...] = CORE_ALLOWED_TOOLS,
+    is_owner: bool = True,
 ) -> tuple[str, ...]:
-    """Return the minimal allowed tool set for one routed turn."""
+    """Return the minimal allowed tool set for one routed turn.
+
+    ``is_owner`` gates phone/SQL tools: non-owner senders never get them,
+    independent of the access policy (defense-in-depth against prompt
+    injection from group messages).
+    """
     extras = set(INTENT_TOOLS.get(intent, ()))
     extras.update(detect_extra_tools(text))
     if intent == "CODEX":
         extras.update(t for t in external_tools if t.startswith("mcp__codex"))
-    return tuple(sorted(frozenset(base) | extras))
+    combined = frozenset(base) | extras
+    if not is_owner:
+        combined -= OWNER_ONLY_TOOLS
+    return tuple(sorted(combined))

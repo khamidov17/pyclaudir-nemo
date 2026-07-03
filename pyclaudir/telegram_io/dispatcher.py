@@ -173,7 +173,11 @@ class TelegramDispatcher:
         # All other text/caption messages plus photos and documents.
         self.application.add_handler(
             MessageHandler(
-                filters.TEXT | filters.CAPTION | filters.PHOTO | filters.Document.ALL | filters.VOICE,
+                filters.TEXT
+                | filters.CAPTION
+                | filters.PHOTO
+                | filters.Document.ALL
+                | filters.VOICE,
                 self._on_message,
             )
         )
@@ -199,15 +203,21 @@ class TelegramDispatcher:
         if not self._is_owner(update):
             return
         import os
+
         server_ip = os.environ.get("NEMO_SERVER_IP", "165.140.240.169")
         voice_url = f"http://{server_ip}:3001"
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(
-                "🎙 Open Nemo Voice",
-                web_app=WebAppInfo(url=voice_url),
-            )
-        ]])
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🎙 Open Nemo Voice",
+                        web_app=WebAppInfo(url=voice_url),
+                    )
+                ]
+            ]
+        )
         await update.effective_message.reply_text(
             "Tap to start voice conversation with Nemo:",
             reply_markup=keyboard,
@@ -222,6 +232,7 @@ class TelegramDispatcher:
         except Exception:
             pass
         from ..security import write_kill_marker
+
         write_kill_marker(self.config.data_dir)
         log.warning("kill marker written to %s", self.config.data_dir / "kill_marker")
         os.kill(os.getpid(), signal.SIGTERM)
@@ -444,9 +455,17 @@ class TelegramDispatcher:
             transcript = await self._transcribe_voice(msg)
             if transcript:
                 cm = cm.model_copy(update={"text": f"[Voice note]: {transcript}"})
-                log.info("STT transcribed voice note chat=%s: %r", cm.chat_id, transcript[:60])
+                log.info(
+                    "STT transcribed voice note chat=%s: %r",
+                    cm.chat_id,
+                    transcript[:60],
+                )
             else:
-                cm = cm.model_copy(update={"text": "[Voice note — transcription unavailable. Please type your message.]"})
+                cm = cm.model_copy(
+                    update={
+                        "text": "[Voice note — transcription unavailable. Please type your message.]"
+                    }
+                )
 
         await self._attach_attachment_markers(update, cm)
         await self._persist_inbound(cm)
@@ -491,6 +510,7 @@ class TelegramDispatcher:
                     cm.text,
                     intent=decision.intent,
                     external_tools=self.external_mcp_tools,
+                    is_owner=cm.user_id == self.config.owner_id,
                 ),
             }
 
@@ -501,6 +521,7 @@ class TelegramDispatcher:
         # Inject relevant memory snippets as context before the turn reaches CC.
         if self.memory_store is not None and cm.text:
             from ..memory_context import build_memory_context
+
             ctx = build_memory_context(cm.text, self.memory_store)
             if ctx:
                 cm = cm.model_copy(update={"memory_context": ctx})
@@ -523,12 +544,14 @@ class TelegramDispatcher:
             from ..stt import transcribe as stt_transcribe
             import tempfile
             import os
+
             voice = msg.voice  # type: ignore[attr-defined]
             tg_file = await self.bot.get_file(voice.file_id)
             with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
                 tmp_path = tmp.name
             await tg_file.download_to_drive(tmp_path)
             from pathlib import Path
+
             result = await stt_transcribe(Path(tmp_path))
             os.unlink(tmp_path)
             return result

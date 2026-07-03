@@ -19,6 +19,7 @@ from .base import BaseTool, ToolResult
 # set_reminder
 # ---------------------------------------------------------------------------
 
+
 class SetReminderArgs(BaseModel):
     chat_id: int = Field(description="Telegram chat id where the reminder should fire.")
     user_id: int = Field(description="Telegram user id who requested the reminder.")
@@ -119,6 +120,7 @@ class SetReminderTool(BaseTool):
 # list_reminders
 # ---------------------------------------------------------------------------
 
+
 class ListRemindersArgs(BaseModel):
     chat_id: int = Field(description="Telegram chat id to list reminders for.")
 
@@ -139,7 +141,7 @@ class ListRemindersTool(BaseTool):
         lines = ["id\ttrigger_at\tcron\ttext"]
         for r in rows:
             cron = r["cron_expr"] or "-"
-            lines.append(f'{r["id"]}\t{r["trigger_at"]}\t{cron}\t{r["text"]}')
+            lines.append(f"{r['id']}\t{r['trigger_at']}\t{cron}\t{r['text']}")
         return ToolResult(
             content="\n".join(lines),
             data={"count": len(rows)},
@@ -149,6 +151,7 @@ class ListRemindersTool(BaseTool):
 # ---------------------------------------------------------------------------
 # cancel_reminder
 # ---------------------------------------------------------------------------
+
 
 class CancelReminderArgs(BaseModel):
     reminder_id: int = Field(description="The id of the reminder to cancel.")
@@ -169,15 +172,17 @@ class CancelReminderTool(BaseTool):
             return ToolResult(content="database unavailable", is_error=True)
 
         # Hard-gate: auto-seeded reminders represent mandatory, operator-
-        # installed loops (currently: self-reflection). They are not
-        # cancellable via the agent tool surface. Even if the bot is
-        # prompt-injected into trying, the tool refuses.
+        # installed loops (self-reflection, profile/memory upkeep). They are
+        # not cancellable via the agent tool surface, even under prompt
+        # injection. Briefings are auto-seeded too but ARE user-facing, so
+        # they're exempt from the gate (their key contains "brief").
         reminder = await fetch_reminder_by_id(self.ctx.database, args.reminder_id)
-        if reminder is not None and reminder.get("auto_seed_key"):
+        seed_key = reminder.get("auto_seed_key") if reminder else None
+        if seed_key and "brief" not in seed_key:
             return ToolResult(
                 content=(
                     f"reminder #{args.reminder_id} is an auto-seeded mandatory "
-                    f"loop ({reminder['auto_seed_key']}) and cannot be cancelled"
+                    f"loop ({seed_key}) and cannot be cancelled"
                 ),
                 is_error=True,
             )

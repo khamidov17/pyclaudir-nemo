@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
@@ -23,6 +24,7 @@ from pathlib import Path
 from fastapi.responses import FileResponse
 from .models import ChatMessage
 from .phone_broker import PhoneBroker
+from .recording_store import RecordingStore, SaveOpts, is_safe_rec_id
 from .tools.base import ToolContext
 
 log = logging.getLogger("pyclaudir.app_api")
@@ -34,6 +36,13 @@ def _next_msg_id() -> int:
     global _MSG_COUNTER
     _MSG_COUNTER -= 1
     return _MSG_COUNTER
+
+
+def _to_int(value: object) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 class AppApiServer:
@@ -54,22 +63,58 @@ class AppApiServer:
         self._data_dir = data_dir
         self._engine: object | None = None
         self._server: uvicorn.Server | None = None
+        # Whole-room meeting recordings (audio + dated transcript). Off when no
+        # data_dir (tests/standalone).
+        self._recordings = RecordingStore(data_dir / "recordings") if data_dir else None
+        # Dedicated token for the inbound webhook (POST /hook). Separate from the
+        # app token so the owner can hand it to external services (CI, IFTTT, a
+        # script) without exposing phone control. Endpoint is off when unset.
+        self._webhook_token = os.environ.get("NEMO_WEBHOOK_TOKEN", "").strip()
+        # One-time, short-lived APK download tokens (for the browser fallback,
+        # so the long-lived app token never lands in browser history).
+        self._dl_tokens: dict[str, float] = {}
         self.app = self._build_app()
+
+    def _prune_dl_tokens(self) -> None:
+        import time
+
+        now = time.monotonic()
+        self._dl_tokens = {t: e for t, e in self._dl_tokens.items() if e > now}
+
+    def _valid_dl_token(self, token: str) -> bool:
+        """True if `token` is a known, unexpired download token. Time-limited
+        (2 min) but NOT single-use: a browser / download-manager makes several
+        requests (probe, range) for one file, so it must work more than once
+        within the short window."""
+        if not token:
+            return False
+        self._prune_dl_tokens()
+        return token in self._dl_tokens
 
     def set_engine(self, engine: object) -> None:
         self._engine = engine
 
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="Nemo App API", docs_url=None, redoc_url=None)
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # The native app sends no Origin header and needs no CORS. A browser is
+        # not a supported client, so don't hand one a wildcard grant to a
+        # phone-control API — restrict to explicit origins if ever needed.
+        _origins = [
+            o.strip()
+            for o in os.environ.get("NEMO_CORS_ORIGINS", "").split(",")
+            if o.strip()
+        ]
+        if _origins:
+            app.add_middleware(
+                CORSMiddleware,
+                allow_origins=_origins,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
 
         def _check_token(request_token: str) -> bool:
             import hmac
+
             return hmac.compare_digest(request_token, self._token)
 
         def _auth(request: Request, token: str = "") -> bool:
@@ -84,32 +129,61 @@ class AppApiServer:
             """Authenticated version check."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             try:
-                v = int((self._data_dir / "apk" / "version.txt").read_text().strip()) if self._data_dir else 0
+                v = (
+                    int((self._data_dir / "apk" / "version.txt").read_text().strip())
+                    if self._data_dir
+                    else 0
+                )
             except Exception:
                 v = 0
             # Include APK hash so client can verify before installing
             apk_hash = ""
             if self._data_dir:
                 import hashlib
+
                 apk_path = self._data_dir / "apk" / "nemo-latest.apk"
                 if apk_path.exists():
                     apk_hash = hashlib.sha256(apk_path.read_bytes()).hexdigest()
             return {"version": v, "sha256": apk_hash}
 
-        @app.get("/apk/download")
-        async def apk_download(request: Request, token: str = "") -> FileResponse:
-            """Authenticated APK download."""
+        @app.get("/apk/dltoken")
+        async def apk_dltoken(request: Request, token: str = "") -> dict:
+            """Issue a one-time, 2-minute APK download token (header-authed) so
+            the browser fallback never carries the long-lived app token."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
+                raise HTTPException(401, "unauthorized")
+            import secrets
+            import time
+
+            # Prune expired + bound the dict so repeated issuance can't grow it.
+            self._prune_dl_tokens()
+            if len(self._dl_tokens) > 100:
+                self._dl_tokens.clear()
+            t = secrets.token_urlsafe(24)
+            self._dl_tokens[t] = time.monotonic() + 120
+            return {"token": t}
+
+        @app.get("/apk/download")
+        async def apk_download(request: Request, token: str = "") -> FileResponse:
+            """APK download — accepts the app token (header/query) OR a valid
+            one-time download token."""
+            if not (_auth(request, token) or self._valid_dl_token(token)):
+                from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             if self._data_dir is None:
                 from fastapi import HTTPException
+
                 raise HTTPException(404, "APK not available")
             apk_path = self._data_dir / "apk" / "nemo-latest.apk"
             if not apk_path.exists():
                 from fastapi import HTTPException
+
                 raise HTTPException(404, "APK not found — run scripts/build_apk.sh")
             return FileResponse(
                 str(apk_path),
@@ -122,6 +196,7 @@ class AppApiServer:
             """Status — requires auth."""
             if not _auth(request, token):
                 from fastapi import HTTPException
+
                 raise HTTPException(401, "unauthorized")
             return {
                 "status": "ok",
@@ -129,10 +204,128 @@ class AppApiServer:
                 "phone_connected": self._broker.connected,
             }
 
+        def _webhook_ok(request: Request, token: str) -> bool:
+            """Auth for /hook — the dedicated webhook token (header or query)."""
+            import hmac
+
+            if not self._webhook_token:
+                return False
+            bearer = request.headers.get("authorization", "")
+            supplied = (
+                bearer[7:].strip() if bearer.lower().startswith("bearer ") else token
+            )
+            return hmac.compare_digest(supplied, self._webhook_token)
+
+        @app.post("/hook")
+        async def webhook(request: Request, token: str = "") -> dict:
+            """External event → Nemo proactively tells (and speaks to) Avazbek.
+
+            POST JSON ``{"text": "..."}`` with the webhook token. The event is
+            routed THROUGH Nemo, so he reacts in character ("heads up, your CI
+            just failed — want me to look?") and it's spoken on the phone, rather
+            than echoed verbatim. Point any service at this URL.
+            """
+            from fastapi import HTTPException
+
+            if not _webhook_ok(request, token):
+                raise HTTPException(401, "unauthorized")
+            try:
+                data = await request.json()
+            except Exception as exc:
+                raise HTTPException(400, "invalid json") from exc
+            text = (data.get("text") or "").strip()[:1000]
+            if not text:
+                raise HTTPException(400, "missing 'text'")
+            if self._engine is None:
+                raise HTTPException(503, "engine not ready")
+            framed = (
+                "[Incoming alert from an external service — tell Avazbek about "
+                "this proactively and naturally, like a heads-up from a friend. "
+                f"Keep it short.]: {text}"
+            )
+            await self._engine.submit(  # type: ignore[union-attr]
+                ChatMessage(
+                    chat_id=self._owner_id,
+                    message_id=_next_msg_id(),
+                    # NOT owner: an external (token-authed but untrusted) event
+                    # must never be owner-privileged — this strips OWNER_ONLY
+                    # tools (run_code/phone/SQL) and trips the run_code backstop,
+                    # so an injected /hook payload can't reach code execution.
+                    # Delivery still routes by chat_id (owner).
+                    user_id=-1,
+                    direction="in",
+                    timestamp=datetime.now(timezone.utc),
+                    text=framed,
+                    source="webhook",
+                )
+            )
+            log.info("webhook → engine: %r", text[:80])
+            return {"status": "delivered"}
+
+        @app.post("/internal/kick")
+        async def internal_kick(request: Request, token: str = "") -> dict:
+            """Wake the reminder loop NOW — the voice process pokes this right
+            after inserting a delegated task so it runs in ~0s instead of waiting
+            for the poll. Localhost + app-token only (it can trigger work).
+            Optional JSON body: {"voice_session_id": "<uuid>"} — stored on the
+            engine so _fire_one_reminder can stream chunks back to the voice session
+            (VOICE_STREAM_BRAIN=1 path)."""
+            from fastapi import HTTPException
+
+            client = request.client.host if request.client else ""
+            if client not in ("127.0.0.1", "::1", "localhost"):
+                raise HTTPException(403, "local only")
+            bearer = request.headers.get("authorization", "")
+            supplied = (
+                bearer[7:].strip() if bearer.lower().startswith("bearer ") else token
+            )
+            if not _check_token(supplied):
+                raise HTTPException(401, "unauthorized")
+            if self._engine is not None:
+                try:
+                    body = await request.json()
+                    vsid = str(body.get("voice_session_id", "")).strip()
+                except Exception:  # noqa: BLE001 — body is optional
+                    vsid = ""
+                if vsid:
+                    self._engine._pending_voice_session_id = vsid  # type: ignore[union-attr]
+                self._engine.reminder_kick.set()  # type: ignore[union-attr]
+            return {"status": "kicked"}
+
+        @app.post("/recording/upload")
+        async def recording_upload(request: Request) -> dict:
+            """Phone uploads a finished meeting recording (multipart). Saves it,
+            returns immediately, and transcribes (Groq Whisper) in the background.
+
+            Form fields: ``file`` (audio), ``id``, ``started_ms``, ``ended_ms``.
+            App-token authed (header or ``token`` form field)."""
+            from fastapi import HTTPException
+
+            form = await request.form()
+            if not _auth(request, str(form.get("token", ""))):
+                raise HTTPException(401, "unauthorized")
+            if self._recordings is None:
+                raise HTTPException(503, "recordings unavailable")
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read"):
+                raise HTTPException(400, "missing 'file'")
+            rec_id = str(form.get("id") or "").strip() or f"rec-{int(time.time())}"
+            if not is_safe_rec_id(rec_id):
+                # Attacker-influenced path segment — reject traversal/odd ids.
+                raise HTTPException(400, "invalid recording id")
+            audio = await upload.read()  # type: ignore[union-attr]
+            opts = SaveOpts(
+                audio_name=getattr(upload, "filename", "audio.m4a") or "audio.m4a",
+                started_ms=_to_int(form.get("started_ms")),
+                ended_ms=_to_int(form.get("ended_ms")),
+            )
+            meta = self._recordings.save_audio(rec_id, audio, opts)
+            asyncio.create_task(self._transcribe(rec_id), name=f"stt-{rec_id}")
+            log.info("recording upload id=%s %d bytes", rec_id, meta.audio_bytes)
+            return {"status": "saved", "id": rec_id, "bytes": meta.audio_bytes}
+
         @app.websocket("/ws")
-        async def ws_endpoint(
-            websocket: WebSocket, device_id: str = ""
-        ) -> None:
+        async def ws_endpoint(websocket: WebSocket, device_id: str = "") -> None:
             # Accept first, then authenticate via first message (token not in URL)
             await websocket.accept()
             try:
@@ -148,7 +341,9 @@ class AppApiServer:
 
             self._ctx.app_clients.add(websocket)
             did = device_id
-            log.info("app connected device=%s (%d total)", did, len(self._ctx.app_clients))
+            log.info(
+                "app connected device=%s (%d total)", did, len(self._ctx.app_clients)
+            )
 
             await websocket.send_text(
                 f'{{"type":"connected","status":"ok","device_id":"{did}"}}'
@@ -171,10 +366,29 @@ class AppApiServer:
             finally:
                 self._ctx.app_clients.discard(websocket)
                 await self._broker.unregister_device(did)
-                log.info("app disconnected device=%s (%d remaining)", did,
-                         len(self._ctx.app_clients))
+                log.info(
+                    "app disconnected device=%s (%d remaining)",
+                    did,
+                    len(self._ctx.app_clients),
+                )
 
         return app
+
+    async def _transcribe(self, rec_id: str) -> None:
+        """Background: Groq Whisper over the uploaded audio → dated transcript."""
+        if self._recordings is None:
+            return
+        path = self._recordings.audio_path(rec_id)
+        if path is None:
+            return
+        from . import stt
+
+        text = await stt.transcribe(path)
+        if text:
+            self._recordings.set_transcript(rec_id, text)
+            log.info("recording %s transcribed (%d chars)", rec_id, len(text))
+        else:
+            log.warning("recording %s transcription unavailable", rec_id)
 
     async def _dispatch(self, data: dict, device_id: str, websocket: WebSocket) -> None:
         msg_type = data.get("type", "message")
@@ -189,16 +403,19 @@ class AppApiServer:
             if media and isinstance(media, dict):
                 import base64 as _b64
                 import uuid as _uuid
+
                 raw = _b64.b64decode(media.get("data", ""))
                 mime = media.get("mime", "application/octet-stream")
                 ext = "jpg" if "image" in mime else "pdf" if "pdf" in mime else "bin"
                 fname = f"app_media_{_uuid.uuid4().hex[:8]}.{ext}"
-                att_dir = self._data_dir / "attachments" / "app" if self._data_dir else None
+                att_dir = (
+                    self._data_dir / "attachments" / "app" if self._data_dir else None
+                )
                 if att_dir:
                     att_dir.mkdir(parents=True, exist_ok=True)
                     att_path = att_dir / fname
                     att_path.write_bytes(raw)
-                    text = f"{text}\n[attachment: {att_path} type={mime} size={len(raw)//1024}KB filename={fname}]"
+                    text = f"{text}\n[attachment: {att_path} type={mime} size={len(raw) // 1024}KB filename={fname}]"
 
             if not text:
                 return
@@ -223,13 +440,20 @@ class AppApiServer:
             if action_id:
                 # Strip image data from logs — never audit-log base64
                 safe = {k: v for k, v in data.items() if k != "image_b64"}
-                log.debug("action_result device=%s id=%s ok=%s %s",
-                          device_id, action_id, data.get("ok"), safe)
+                log.debug(
+                    "action_result device=%s id=%s ok=%s %s",
+                    device_id,
+                    action_id,
+                    data.get("ok"),
+                    safe,
+                )
                 self._broker.deliver_result(action_id, data)
 
         elif msg_type == "panic":
             # Emergency stop — kill phone control session immediately
-            log.warning("PANIC received from device=%s — stopping phone control", device_id)
+            log.warning(
+                "PANIC received from device=%s — stopping phone control", device_id
+            )
             await self._broker.unregister_device(device_id)
             await websocket.send_text('{"type":"panic_ack","status":"stopped"}')
             return  # Close connection
@@ -243,16 +467,25 @@ class AppApiServer:
             log.debug("unknown message type=%s from device=%s", msg_type, device_id)
 
     async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
+        import os
+
+        # TLS: set NEMO_TLS_CERT/NEMO_TLS_KEY (scripts/gen_server_cert.sh) and
+        # the app connects with wss:// + cert pinning instead of cleartext.
+        cert = os.environ.get("NEMO_TLS_CERT", "").strip() or None
+        key = os.environ.get("NEMO_TLS_KEY", "").strip() or None
         config = uvicorn.Config(
             self.app,
             host=host,
             port=port,
             log_level="warning",
             access_log=False,
+            ssl_certfile=cert,
+            ssl_keyfile=key,
         )
         self._server = uvicorn.Server(config)
         asyncio.create_task(self._server.serve(), name="nemo-app-api")
-        log.info("app api ws://%s:%d/ws (phone_broker attached)", host, port)
+        scheme = "wss" if cert else "ws"
+        log.info("app api %s://%s:%d/ws (phone_broker attached)", scheme, host, port)
 
     async def stop(self) -> None:
         if self._server:

@@ -50,7 +50,10 @@ class SendMemoryDocumentTool(BaseTool):
 
     async def run(self, args: SendMemoryDocumentArgs) -> ToolResult:
         if self.ctx.bot is None:
-            return ToolResult(content="bot not configured", is_error=True)
+            return ToolResult(
+                content="document delivery isn't available in app-only mode",
+                is_error=False,
+            )
         store = self.ctx.memory_store
         if store is None:
             return ToolResult(content="memory store unavailable", is_error=True)
@@ -62,7 +65,8 @@ class SendMemoryDocumentTool(BaseTool):
 
         if not resolved.exists() or not resolved.is_file():
             return ToolResult(
-                content=f"memory file not found: {args.path}", is_error=True,
+                content=f"memory file not found: {args.path}",
+                is_error=True,
             )
 
         sent = await self.ctx.bot.send_document(
@@ -75,7 +79,9 @@ class SendMemoryDocumentTool(BaseTool):
         message_id = sent.message_id
         log.info(
             "hot-path stage=delivered chat=%s msg=%s document=%s",
-            args.chat_id, message_id, args.path,
+            args.chat_id,
+            message_id,
+            args.path,
         )
 
         if self.ctx.on_chat_replied is not None:

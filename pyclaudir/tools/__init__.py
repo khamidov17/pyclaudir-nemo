@@ -4,16 +4,31 @@ The MCP server auto-discovers every ``BaseTool`` subclass found in modules in
 this package at startup. No registry edits required.
 """
 
+from .calculate import CalculateTool
+from .convert_units import ConvertUnitsTool
 from .fetch_url import FetchUrlTool
 from .phone_action import PhoneActionTool
+from .recordings import ListRecordingsTool, ReadTranscriptTool
+from .run_code import RunCodeTool
 from .search_memories import SearchMemoriesTool
 from .send_voice_message import SendVoiceMessageTool
 from .synthesize_memory import SynthesizeMemoryWikiTool
+from .world_time import WorldTimeTool
+from .log_to_journal import LogToJournalTool
+from .write_voice_profile import WriteVoiceProfileTool
 
 __all__ = [
+    "CalculateTool",
+    "LogToJournalTool",
+    "ConvertUnitsTool",
     "FetchUrlTool",
+    "ListRecordingsTool",
     "PhoneActionTool",
+    "ReadTranscriptTool",
+    "RunCodeTool",
     "SearchMemoriesTool",
     "SendVoiceMessageTool",
     "SynthesizeMemoryWikiTool",
+    "WorldTimeTool",
+    "WriteVoiceProfileTool",
 ]

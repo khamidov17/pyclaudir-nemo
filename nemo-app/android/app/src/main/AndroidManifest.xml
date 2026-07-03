@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
@@ -15,12 +17,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM"/>
+    <uses-permission android:name="android.permission.READ_PHONE_STATE"/>
 
     <application
         android:label="Nemo"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false">
 
         <activity
             android:name=".MainActivity"
@@ -69,6 +73,29 @@
                 android:resource="@xml/accessibility_service_config"/>
         </service>
 
+        <!-- Message awareness: reads notifications (Telegram/WhatsApp) for the
+             "check my messages" rundown. User grants access once in Settings. -->
+        <service
+            android:name=".NemoNotificationListenerService"
+            android:exported="true"
+            android:label="Nemo Message Awareness"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+
+        <!-- Hash-verified APK installs (UpdateService → IntentActions.installApk) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>
@@ -84,5 +111,20 @@
             <action android:name="android.intent.action.MAIN"/>
             <category android:name="android.intent.category.LAUNCHER"/>
         </intent>
+        <!-- B09: required for SET_ALARM intent on API 30+ -->
+        <intent>
+            <action android:name="android.intent.action.SET_ALARM"/>
+        </intent>
+        <!-- B09: required for SET_TIMER intent -->
+        <intent>
+            <action android:name="android.intent.action.SET_TIMER"/>
+        </intent>
+        <!-- B09: required for DIAL intent -->
+        <intent>
+            <action android:name="android.intent.action.DIAL"/>
+        </intent>
     </queries>
+    <!-- B10: enumerate installed packages for listApps command (API 30+) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission"/>
 </manifest>

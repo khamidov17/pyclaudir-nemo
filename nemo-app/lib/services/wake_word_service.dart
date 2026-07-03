@@ -1,122 +1,119 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 
-/// On-device wake word detection — no API key, fully offline.
+/// On-device wake word via native **openWakeWord** (ONNX keyword spotter).
 ///
-/// Uses long listening windows. Android's built-in speech recognizer can chime
-/// whenever listening starts, so short restart loops are intentionally avoided.
+/// Replaces the old Vosk STT: openWakeWord is a tiny purpose-built model (like
+/// "Hey Siri"), far more accurate on the wake phrase and much lighter — and
+/// fully offline, with NO network and NO vendor key (works in China). The
+/// native engine (WakeWordController.kt) captures the mic itself and reports
+/// detections; this service just arms/disarms it and debounces.
+///
+/// Public interface is unchanged so VoiceSessionController et al. don't change.
+/// Ships with a placeholder model until a custom "hey nemo" model is trained
+/// (openWakeWord + Colab) and dropped into assets.
 class WakeWordService extends ChangeNotifier {
-  final SpeechToText _stt = SpeechToText();
-  bool _running = false;
-  bool _ready = false;
-  bool get isActive => _running;
-  VoidCallback? onWakeWord;
+  static const _channel = MethodChannel('com.avazbek.nemo_app/wakeword');
+  // Placeholder wake model (assets/hey_jarvis_v0.1.onnx) — so today the wake
+  // phrase is "hey jarvis", not "hey nemo". Train a custom hey_nemo.onnx
+  // (see scripts/train_wakeword/README.md), drop it in assets/, and change this
+  // one constant to 'hey_nemo.onnx' (then re-tune _threshold below).
+  static const _model = 'hey_jarvis_v0.1.onnx';
+  // The placeholder "hey jarvis" model peaks ~0.39 for this device/voice (the
+  // custom "hey nemo" model will score higher). 0.3 sits comfortably between
+  // that peak and the ~0.03 quiet floor, so it fires without false-triggering.
+  static const _threshold = 0.3;
 
-  static const _triggers = ['nemo', 'hey nemo', 'ok nemo', 'yo nemo'];
+  bool _running = false;
+  DateTime _lastFire = DateTime.fromMillisecondsSinceEpoch(0);
+  VoidCallback? onWakeWord;
+  bool get isActive => _running;
 
   static const _store = FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
 
-  /// Wake word is ON by default so "nemo" works even with the app closed
-  /// (the background foreground-service keeps the mic alive). Long listening
-  /// windows keep Android's recognizer chime infrequent. Toggle off in
-  /// Settings if the periodic chime bothers you.
+  WakeWordService() {
+    _channel.setMethodCallHandler(_onNative);
+  }
+
+  /// Wake word is OFF by default (opt in from Settings).
   static Future<bool> isEnabled() async =>
-      (await _store.read(key: 'wake_word_enabled')) != 'false';
+      (await _store.read(key: 'wake_word_enabled')) == 'true';
 
   static Future<void> setEnabled(bool on) async =>
       _store.write(key: 'wake_word_enabled', value: on ? 'true' : 'false');
 
-  Future<void> init() async {
-    _ready = await _stt.initialize(
-      onError: (e) => debugPrint('wake STT error: ${e.errorMsg}'),
-      debugLogging: false,
-    );
-    debugPrint('WakeWordService ready: $_ready');
-  }
+  /// No-op: the native engine loads its ONNX models lazily on first start().
+  Future<void> init() async {}
 
-  Future<void> start() async {
-    if (!_ready || _running) return;
-    if (!await isEnabled()) {
-      debugPrint('WakeWordService: disabled (opt in via Settings)');
+  Future<dynamic> _onNative(MethodCall call) async {
+    if (call.method == 'onWakeWordError') {
+      debugPrint('WakeWordService: mic error — ${call.arguments}');
+      _running = false;
+      notifyListeners();
       return;
     }
-    _running = true;
-    notifyListeners();
-    debugPrint('WakeWordService: started');
-    _loop();
+    if (call.method != 'onWakeWord') return;
+    if (!_running) return; // stop() may have arrived before this native callback
+    // Debounce so one utterance fires once (the engine has its own cooldown
+    // too, but a short guard here is cheap insurance).
+    final now = DateTime.now();
+    if (now.difference(_lastFire) < const Duration(seconds: 3)) return;
+    _lastFire = now;
+    debugPrint('Wake word detected (score=${call.arguments})');
+    onWakeWord?.call();
+  }
+
+  bool _starting = false;
+
+  Future<void> start() async {
+    if (_running || _starting) return;
+    _starting = true;
+    try {
+      await _start();
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _start() async {
+    if (!await isEnabled()) {
+      debugPrint('WakeWordService: disabled (opt in via Settings)');
+      try {
+        await _channel.invokeMethod('toast', {
+          'msg': 'Wake word is OFF — enable it in Settings',
+        });
+      } catch (_) {}
+      return;
+    }
+    try {
+      await _channel.invokeMethod('start', {
+        'model': _model,
+        'threshold': _threshold,
+      });
+      _running = true;
+      notifyListeners();
+      debugPrint('WakeWordService: listening (openWakeWord)');
+    } catch (e) {
+      debugPrint('WakeWord start failed: $e');
+    }
   }
 
   Future<void> stop() async {
+    try {
+      await _channel.invokeMethod('stop');
+    } catch (_) {}
     _running = false;
-    await _stt.cancel();
     notifyListeners();
     debugPrint('WakeWordService: stopped');
   }
 
-  Future<void> _loop() async {
-    while (_running) {
-      if (_stt.isListening) {
-        await Future.delayed(const Duration(milliseconds: 200));
-        continue;
-      }
-
-      final completer = Completer<String>();
-
-      try {
-        await _stt.listen(
-          onResult: (r) {
-            final text = r.recognizedWords.toLowerCase();
-            // Check partial results immediately — no waiting for final
-            if (_isTrigger(text) && !completer.isCompleted) {
-              completer.complete(text);
-            } else if (r.finalResult && !completer.isCompleted) {
-              completer.complete('');
-            }
-          },
-          listenOptions: SpeechListenOptions(
-            listenFor: const Duration(minutes: 5),
-            pauseFor: const Duration(seconds: 30),
-            cancelOnError: true,
-            partialResults: true,
-          ),
-        );
-      } catch (e) {
-        debugPrint('WakeWord listen error: $e');
-        if (!completer.isCompleted) completer.complete('');
-      }
-
-      final result = await completer.future.timeout(
-        const Duration(minutes: 5, seconds: 2),
-        onTimeout: () => '',
-      );
-
-      if (!_running) break;
-
-      if (_isTrigger(result)) {
-        debugPrint('Wake word detected: "$result"');
-        await _stt.cancel();
-        onWakeWord?.call();
-        // Wait for voice interaction to complete before resuming
-        await Future.delayed(const Duration(seconds: 8));
-      } else {
-        await Future.delayed(const Duration(seconds: 2));
-      }
-    }
-  }
-
-  bool _isTrigger(String text) {
-    if (text.isEmpty) return false;
-    return _triggers.any((t) => text.contains(t));
-  }
-
   @override
   void dispose() {
-    _running = false;
-    _stt.cancel();
+    stop(); // unawaited in dispose — best-effort, fire-and-forget
     super.dispose();
   }
 }

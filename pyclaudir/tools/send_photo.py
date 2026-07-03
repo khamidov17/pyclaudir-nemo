@@ -47,7 +47,10 @@ class SendPhotoTool(BaseTool):
 
     async def run(self, args: SendPhotoArgs) -> ToolResult:
         if self.ctx.bot is None:
-            return ToolResult(content="bot not configured", is_error=True)
+            return ToolResult(
+                content="photos aren't available in app-only mode",
+                is_error=False,
+            )
         store = self.ctx.render_store
         if store is None:
             return ToolResult(content="render store unavailable", is_error=True)
@@ -59,7 +62,8 @@ class SendPhotoTool(BaseTool):
 
         if not resolved.exists() or not resolved.is_file():
             return ToolResult(
-                content=f"render not found: {args.path}", is_error=True,
+                content=f"render not found: {args.path}",
+                is_error=True,
             )
 
         sent = await self.ctx.bot.send_photo(
@@ -71,7 +75,9 @@ class SendPhotoTool(BaseTool):
         message_id = sent.message_id
         log.info(
             "hot-path stage=delivered chat=%s msg=%s photo=%s",
-            args.chat_id, message_id, args.path,
+            args.chat_id,
+            message_id,
+            args.path,
         )
 
         if self.ctx.on_chat_replied is not None:

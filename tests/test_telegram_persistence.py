@@ -18,7 +18,9 @@ from pyclaudir.db.messages import (
 from pyclaudir.models import ChatMessage
 
 
-def _msg(text: str = "hello", message_id: int = 1, chat_id: int = -100, direction: str = "in") -> ChatMessage:
+def _msg(
+    text: str = "hello", message_id: int = 1, chat_id: int = -100, direction: str = "in"
+) -> ChatMessage:
     return ChatMessage(
         chat_id=chat_id,
         message_id=message_id,
@@ -88,8 +90,12 @@ async def test_inbound_and_outbound_coexist(db: Database) -> None:
 @pytest.mark.asyncio
 async def test_upsert_user_increments_count(db: Database) -> None:
     ts = datetime(2026, 4, 11, 10, 0, tzinfo=timezone.utc)
-    await upsert_user(db, chat_id=-100, user_id=42, username="a", first_name="A", timestamp=ts)
-    await upsert_user(db, chat_id=-100, user_id=42, username="a", first_name="A", timestamp=ts)
+    await upsert_user(
+        db, chat_id=-100, user_id=42, username="a", first_name="A", timestamp=ts
+    )
+    await upsert_user(
+        db, chat_id=-100, user_id=42, username="a", first_name="A", timestamp=ts
+    )
     row = await db.fetch_one("SELECT message_count FROM users")
     assert row["message_count"] == 2
 
@@ -101,5 +107,17 @@ async def test_dispatcher_drops_disallowed_chats() -> None:
     from pyclaudir.access import AccessConfig, gate
 
     access = AccessConfig(policy="owner_only", allowed_users=[], allowed_chats=[])
-    assert gate(access=access, owner_id=42, chat_id=-100999, user_id=999, chat_type="supergroup") is False
-    assert gate(access=access, owner_id=42, chat_id=42, user_id=42, chat_type="private") is True
+    assert (
+        gate(
+            access=access,
+            owner_id=42,
+            chat_id=-100999,
+            user_id=999,
+            chat_type="supergroup",
+        )
+        is False
+    )
+    assert (
+        gate(access=access, owner_id=42, chat_id=42, user_id=42, chat_type="private")
+        is True
+    )

@@ -1,12 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
-/// Background foreground service that keeps "Hey Nemo" wake word
-/// detection alive even when the app is minimized or screen is off.
+/// Background foreground service that keeps Nemo alive when the app is
+/// minimized or the screen is off — so "Hey Nemo" can be heard AND scheduled
+/// reminders/briefings can be spoken on time even with the phone pocketed.
 ///
-/// The wake word detection itself still runs in WakeWordService
-/// on the main Flutter isolate — this service just prevents Android
-/// from killing the app.
+/// Neither the wake word nor playback runs here; this service only prevents
+/// Android from killing the process. Wake word lives in WakeWordService and
+/// TTS playback in VoiceService, both on the main isolate.
 class BackgroundWakeWordService {
   static bool _initialized = false;
 
@@ -19,7 +20,7 @@ class BackgroundWakeWordService {
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'nemo_wake_word',
         channelName: 'Nemo',
-        channelDescription: 'Listening for "Hey Nemo"',
+        channelDescription: 'Keeps Nemo ready for voice and reminders',
         channelImportance: NotificationChannelImportance.LOW,
         priority: NotificationPriority.LOW,
       ),
@@ -37,19 +38,23 @@ class BackgroundWakeWordService {
   }
 
   /// Start the foreground service (shows persistent notification).
-  static Future<void> start() async {
+  /// [statusText] describes what Nemo is doing — pass the wake-word line when
+  /// it's enabled, else a generic ready line.
+  static Future<void> start({
+    String statusText = 'Active — ready for voice and reminders',
+  }) async {
     await init();
     if (await FlutterForegroundTask.isRunningService) return;
 
     await FlutterForegroundTask.startService(
       serviceId: 256,
       notificationTitle: 'Nemo',
-      notificationText: 'Listening for "Hey Nemo"…',
+      notificationText: statusText,
       notificationIcon: null,
       callback: _noopCallback,
     );
 
-    debugPrint('BackgroundWakeWordService: started');
+    debugPrint('BackgroundWakeWordService: started ($statusText)');
   }
 
   static Future<void> stop() async {
@@ -73,11 +78,8 @@ class _KeepAliveHandler extends TaskHandler {
 
   @override
   Future<void> onRepeatEvent(DateTime timestamp) async {
-    // Update notification text periodically
-    FlutterForegroundTask.updateService(
-      notificationTitle: 'Nemo',
-      notificationText: 'Listening for "Hey Nemo"…',
-    );
+    // Keep-alive tick only — don't overwrite the status text set at start
+    // (which reflects whether wake word is on).
   }
 
   @override

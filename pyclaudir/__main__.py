@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 import tempfile
@@ -31,10 +32,14 @@ from .db.database import Database
 from .db.messages import insert_tool_call
 from .db.reminders import (
     advance_recurring_reminder,
+    any_with_auto_seed_key,
+    claim_reminder_firing,
     fetch_due_reminders,
     insert_auto_seeded_reminder,
     mark_reminder_sent,
     pending_with_auto_seed_key,
+    reset_all_firing_to_pending,
+    reset_reminder_to_pending,
 )
 from .engine import Engine
 from .instructions_store import InstructionsStore
@@ -45,6 +50,7 @@ from .nemo_router import NemoRouter, RouterConfig
 from .storage.memory import MemoryStore
 from .plugins import Plugins, load_plugins
 from .rate_limiter import RateLimiter
+from .recording_store import RecordingStore
 from .storage.render import RenderStore
 from .skills_store import SkillsStore
 from .telegram_io import TelegramDispatcher
@@ -131,6 +137,67 @@ async def _seed_default_reminders(db, config) -> None:
     # Always check these — re-seeds if deleted between restarts
     await _seed_profile_synthesis_reminder(db, config)
     await _seed_memory_consolidation_reminder(db, config)
+    await _seed_briefing_reminders(db, config)
+
+
+# Proactive spoken briefings. Local times converted to UTC cron using
+# NEMO_UTC_OFFSET (Tashkent = +5). Overridable via env. Unlike the mandatory
+# loops these are seeded ONCE (any-status check) so a user who cancels one
+# keeps it off. The text fires into the engine, which speaks it on the phone.
+_BRIEFINGS = (
+    (
+        "morning-brief-default",
+        "NEMO_MORNING_BRIEF_CRON",
+        "0 3 * * *",  # 08:00 Tashkent
+        "Good-morning briefing for Avazbek — speak it warmly like a friend, 2-3 "
+        "sentences: greet him by name, today's date and time, anything you "
+        "remember he's working on or has coming up, and one upbeat nudge for the "
+        "day. Use send_message so it's spoken on his phone.",
+    ),
+    (
+        "evening-brief-default",
+        "NEMO_EVENING_BRIEF_CRON",
+        "0 16 * * *",  # 21:00 Tashkent
+        "Evening check-in for Avazbek — speak it warmly, 2-3 sentences: ask how "
+        "his day went, recap anything notable he told you today, and remind him "
+        "of anything pending for tomorrow. Use send_message so it's spoken on "
+        "his phone.",
+    ),
+)
+
+
+async def _seed_briefing_reminders(db, config) -> None:
+    """Install the morning + evening spoken briefings, once each.
+
+    OFF by default — all scheduling is user-driven (the owner sets/cancels
+    briefings and reminders by voice). Set NEMO_SEED_BRIEFINGS=1 to opt back
+    into the two default briefings.
+    """
+    import os
+
+    if os.environ.get("NEMO_SEED_BRIEFINGS") != "1":
+        return
+    for key, env, default_cron, text in _BRIEFINGS:
+        if await any_with_auto_seed_key(db, key) > 0:
+            continue
+        cron_expr = os.environ.get(env, default_cron)
+        first_trigger = datetime.now(timezone.utc)
+        try:
+            from croniter import croniter
+
+            first_trigger = croniter(cron_expr, first_trigger).get_next(datetime)
+        except ImportError:  # pragma: no cover
+            pass
+        await insert_auto_seeded_reminder(
+            db,
+            auto_seed_key=key,
+            chat_id=config.owner_id,
+            user_id=-1,
+            text=text,
+            trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
+            cron_expr=cron_expr,
+        )
+        log.info("seeded %s (cron=%s, next=%s UTC)", key, cron_expr, first_trigger)
 
 
 async def _seed_profile_synthesis_reminder(db, config) -> None:
@@ -161,7 +228,9 @@ async def _seed_profile_synthesis_reminder(db, config) -> None:
         text=(
             "Daily profile refresh: call synthesize_memory_wiki to read all memories, "
             "then write or update ABOUT_ME.md with a comprehensive, concise profile. "
-            "Sections: Identity, Current Projects, Preferences, Relationships, Context."
+            "Sections: Identity, Current Projects, Preferences, Relationships, Context. "
+            "After writing ABOUT_ME.md, call write_voice_profile with the owner's "
+            "preferred name, communication tone, and up to 5 current topics of interest."
         ),
         trigger_at=first_trigger.strftime("%Y-%m-%d %H:%M:%S"),
         cron_expr=cron_expr,
@@ -224,7 +293,9 @@ def _bootstrap_access(config: Config) -> None:
     access = load_access(config.access_path)
     log.info(
         "access: policy=%s, allowed_users=%d, allowed_chats=%d",
-        access.policy, len(access.allowed_users), len(access.allowed_chats),
+        access.policy,
+        len(access.allowed_users),
+        len(access.allowed_chats),
     )
 
 
@@ -253,14 +324,17 @@ def _build_stores(config: Config, db: Database, plugins: Plugins) -> _Stores:
     )
     instructions.ensure_dirs()
     skills = SkillsStore(
-        root=project_root / "skills", disabled=plugins.skills_disabled,
+        root=project_root / "skills",
+        disabled=plugins.skills_disabled,
     )
     skills.ensure_root()
     attachments = AttachmentStore(config.attachments_dir)
     renders = RenderStore(config.renders_dir)
     renders.ensure_root()
     rate_limiter = RateLimiter(
-        db=db, limit=config.rate_limit_per_min, owner_id=config.owner_id,
+        db=db,
+        limit=config.rate_limit_per_min,
+        owner_id=config.owner_id,
     )
     return _Stores(
         memory=memory,
@@ -294,7 +368,8 @@ def _build_external_mcp_config(
             }
             log.info(
                 "mcp %s configured (type=stdio, command=%s)",
-                plugin.name, plugin.command,
+                plugin.name,
+                plugin.command,
             )
         else:  # http or sse — remote server, optional static auth headers
             entry: dict = {"type": plugin.type, "url": plugin.url}
@@ -303,7 +378,9 @@ def _build_external_mcp_config(
             extra_mcp[plugin.name] = entry
             log.info(
                 "mcp %s configured (type=%s, url=%s)",
-                plugin.name, plugin.type, plugin.url,
+                plugin.name,
+                plugin.type,
+                plugin.url,
             )
         mcp_allowed_tools.extend(plugin.allowed_tools)
     return extra_mcp, mcp_allowed_tools
@@ -330,10 +407,13 @@ async def _advance_or_close_reminder(db: Database, row: dict) -> None:
         from croniter import croniter
 
         next_dt = croniter(
-            cron_expr, datetime.now(timezone.utc),
+            cron_expr,
+            datetime.now(timezone.utc),
         ).get_next(datetime)
         await advance_recurring_reminder(
-            db, row["id"], next_dt.strftime("%Y-%m-%d %H:%M:%S"),
+            db,
+            row["id"],
+            next_dt.strftime("%Y-%m-%d %H:%M:%S"),
         )
     except ImportError:
         log.warning(
@@ -354,6 +434,18 @@ def _make_reminder_on_success(db: Database, row: dict):
     return _on_success
 
 
+def _make_reminder_on_failure(db: Database, row: dict):
+    """Build the engine ``on_failure`` hook that rolls a claimed reminder back
+    to ``pending`` if the CC turn meant to consume it crashed — so the next loop
+    tick re-fires it instead of leaving it stuck in ``firing`` (#22)."""
+
+    async def _on_failure() -> None:
+        await reset_reminder_to_pending(db, row["id"])
+        log.info("reminder #%d turn failed — reset to pending for retry", row["id"])
+
+    return _on_failure
+
+
 async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
     """Inject one due reminder into the engine as a synthetic message.
 
@@ -367,13 +459,71 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
     If the engine is mid-turn when the reminder fires, the synthetic
     message goes into the pending buffer and runs after the current
     turn ends.
+
+    The row is first *claimed* — moved ``pending`` → ``firing`` — so a turn
+    that outlasts the poll interval is not re-fetched and delivered twice. The
+    claim is atomic; if another cycle already fired this row the claim loses and
+    we skip. ``on_success`` advances/closes it; ``on_failure`` rolls it back to
+    ``pending`` so a crashed turn still re-fires (#22).
     """
     from .models import ChatMessage
+
+    if not await claim_reminder_firing(db, row["id"]):
+        log.info("reminder #%d already claimed by another cycle — skipping", row["id"])
+        return
 
     reminder_xml = (
         f'<reminder id="{row["id"]}" chat_id="{row["chat_id"]}" '
         f'user_id="{row["user_id"]}">{row["text"]}</reminder>'
     )
+    # E3: if VOICE_PROACTIVE=1 and this is a spoken reminder (not a delegated task),
+    # inject it into the active voice session. If the voice server accepts it (202),
+    # skip engine.submit() to avoid double-delivery (BUG-11/proactive).
+    _voice_injected = False
+    if os.environ.get("VOICE_PROACTIVE", "0").strip() == "1" and not row[
+        "text"
+    ].startswith("[Background task"):
+        from .voice_bridge import post_proactive
+
+        _voice_injected = await post_proactive(row["text"])
+
+    if _voice_injected:
+        # Reminder delivered via voice — advance/close without engine.submit().
+        # Guard with the same rollback that on_failure uses: if advance/close raises
+        # (DB error, bad cron_expr, etc.), roll back to pending so it can retry.
+        try:
+            await _advance_or_close_reminder(db, row)
+        except Exception:
+            log.exception("reminder #%d voice-inject succeeded but advance failed; resetting to pending", row["id"])
+            await reset_reminder_to_pending(db, row["id"])
+        return
+    # P3 voice weave-in: if kick body included voice_session_id and streaming is
+    # enabled, build an on_chunk callback so the engine POSTs clause chunks to
+    # the live voice session as they arrive (VOICE_STREAM_BRAIN=1 path).
+    on_chunk = None
+    _stream_brain = os.environ.get("VOICE_STREAM_BRAIN", "0").strip() == "1"
+    vsid = engine._pending_voice_session_id
+    if vsid:
+        engine._pending_voice_session_id = ""
+    if _stream_brain and vsid:
+        from .voice_bridge import post_chunk
+        from .cc_worker.chunker import ClauseChunker
+
+        _chunker = ClauseChunker()
+        _chunk_rev = [0]  # mutable cell shared with the closure
+
+        async def _on_chunk(text: str, final: bool) -> None:
+            if final:
+                for c in _chunker.flush():
+                    _chunk_rev[0] += 1
+                    await post_chunk(vsid, c, True, _chunk_rev[0])
+                return
+            for c in _chunker.feed(text):
+                _chunk_rev[0] += 1
+                await post_chunk(vsid, c, False, _chunk_rev[0])
+
+        on_chunk = _on_chunk
+
     await engine.submit(
         ChatMessage(
             chat_id=row["chat_id"],
@@ -382,14 +532,22 @@ async def _fire_one_reminder(db: Database, engine: Engine, row: dict) -> None:
             direction="in",
             timestamp=datetime.now(timezone.utc),
             text=reminder_xml,
+            source="reminder",  # scheduler turn → blocks autonomous reads
         ),
         on_success=_make_reminder_on_success(db, row),
+        on_failure=_make_reminder_on_failure(db, row),
+        on_chunk=on_chunk,
     )
 
 
 async def _reminder_loop(db: Database, engine: Engine) -> None:
-    """Background reminder scheduler — polls every 60s for due reminders
-    and injects them into the engine as synthetic inbound messages.
+    """Background reminder scheduler — polls for due reminders and injects
+    them into the engine as synthetic inbound messages.
+
+    The poll interval (``NEMO_REMINDER_POLL_SEC``, default 10s) also bounds how
+    fast a voice ``delegate_task`` reaches the engine — it lands as an immediate
+    reminder, so a slow poll made delegated coding feel broken ("taking too
+    long"). 10s keeps delegated tasks snappy while staying a cheap indexed query.
 
     Reminders fire unconditionally when due. If the engine is mid-turn
     the synthetic message gets buffered and runs after the current
@@ -398,12 +556,28 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
     reminders in the same poll cycle, and the failing row's id is
     logged so it's easy to track down.
     """
+    poll_sec = int(os.environ.get("NEMO_REMINDER_POLL_SEC", "10"))
+    # Reclaim rows left ``firing`` by a hard kill mid-delivery (neither the
+    # success nor failure hook ran) so they re-fire on this run instead of being
+    # lost — see #22.
+    try:
+        reclaimed = await reset_all_firing_to_pending(db)
+        if reclaimed:
+            log.info("reminder loop: reclaimed %d row(s) stuck in 'firing'", reclaimed)
+    except Exception:
+        log.exception("reminder loop: failed to reclaim 'firing' rows at startup")
     while True:
-        await asyncio.sleep(60)
+        # Wake on a kick (a just-delegated task) or after poll_sec at the latest.
+        try:
+            await asyncio.wait_for(engine.reminder_kick.wait(), timeout=poll_sec)
+        except asyncio.TimeoutError:
+            pass
+        engine.reminder_kick.clear()
         try:
             now_dt = datetime.now(timezone.utc)
             due = await fetch_due_reminders(
-                db, now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                db,
+                now_dt.strftime("%Y-%m-%d %H:%M:%S"),
             )
         except Exception:
             log.exception("reminder loop: fetch_due_reminders failed")
@@ -415,7 +589,9 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
         for row in due:
             try:
                 log.info(
-                    "firing reminder #%d (chat=%s)", row["id"], row["chat_id"],
+                    "firing reminder #%d (chat=%s)",
+                    row["id"],
+                    row["chat_id"],
                 )
                 await _fire_one_reminder(db, engine, row)
                 # NB: not "fired" — the row stays ``pending`` until the
@@ -427,13 +603,15 @@ async def _reminder_loop(db: Database, engine: Engine) -> None:
 
 
 def _install_signal_handlers(
-    worker: CcWorker, stop_event: asyncio.Event,
+    worker: CcWorker,
+    stop_event: asyncio.Event,
 ) -> None:
     """Wire SIGINT/SIGTERM to the same stop path. Tells the cc supervisor
     we're shutting down BEFORE it observes the subprocess exit (the SIGINT
     propagates to the same process group, so cc is exiting in parallel).
     Without this the supervisor treats the clean exit as a crash and
     respawns."""
+
     def _stop(*_a) -> None:
         log.info("signal received, shutting down")
         worker._stop_supervisor.set()
@@ -451,6 +629,7 @@ async def _async_main() -> None:
     config.ensure_dirs()
 
     from pyclaudir.security import kill_marker_exists
+
     if kill_marker_exists(config.data_dir):
         logging.getLogger(__name__).warning(
             "kill_marker present — refusing to start. Remove %s/kill_marker to restart.",
@@ -491,6 +670,7 @@ async def _async_main() -> None:
         attachment_store=stores.attachments,
         render_store=stores.renders,
         chat_titles=chat_titles,
+        recording_store=RecordingStore(config.data_dir / "recordings"),
     )
 
     mcp = McpServer(
@@ -503,6 +683,7 @@ async def _async_main() -> None:
 
     # Mobile app WebSocket bridge
     import os
+
     app_token = os.environ.get("NEMO_APP_TOKEN", "") or ""
     app_port = int(os.environ.get("NEMO_APP_PORT", "8765") or "8765")
     app_api: AppApiServer | None = None
@@ -510,10 +691,18 @@ async def _async_main() -> None:
         broker = PhoneBroker(data_dir=config.data_dir)
         ctx.phone_broker = broker
         app_api = AppApiServer(
-            token=app_token, owner_id=config.owner_id, ctx=ctx,
-            broker=broker, data_dir=config.data_dir,
+            token=app_token,
+            owner_id=config.owner_id,
+            ctx=ctx,
+            broker=broker,
+            data_dir=config.data_dir,
         )
         await app_api.start(port=app_port)
+    elif config.app_only:
+        log.warning(
+            "app-only mode (no Telegram) but NEMO_APP_TOKEN is unset — "
+            "Nemo has NO user interface. Set NEMO_APP_TOKEN to use the app."
+        )
     else:
         log.info("NEMO_APP_TOKEN not set — mobile app bridge disabled")
 
@@ -522,7 +711,8 @@ async def _async_main() -> None:
     schema_path.write_text(schema_json())
     extra_mcp, mcp_allowed_tools = _build_external_mcp_config(plugins)
     mcp_config_path = mcp.write_mcp_config(
-        tmpdir / "mcp.json", extra_servers=extra_mcp,
+        tmpdir / "mcp.json",
+        extra_servers=extra_mcp,
     )
     log.info("mcp config written to %s", mcp_config_path)
 
@@ -546,67 +736,62 @@ async def _async_main() -> None:
         mcp_allowed_tools=(),
     )
 
-    # Crash-callback closures reference ``engine`` / ``dispatcher`` via
-    # late binding; the worker only invokes them after both are built.
+    # Crash-callback closures reference ``engine`` / ``dispatcher`` via late
+    # binding; the worker only invokes them after both are built.
+    async def _notify_owner(text: str, chat_id: int | None = None) -> None:
+        """Reach the user with a system notice — Telegram when a bot exists,
+        else broadcast over the app/desktop WebSocket (app-only mode)."""
+        target = config.owner_id if chat_id is None else chat_id
+        if dispatcher is not None and dispatcher.bot is not None:
+            try:
+                await dispatcher.bot.send_message(chat_id=target, text=text)
+            except Exception:
+                log.warning("owner notify (telegram) failed", exc_info=True)
+            return
+        from .app_notify import broadcast_to_app
+
+        await broadcast_to_app(ctx.app_clients, text, target)
+
     async def _on_cc_crash(attempt: int, backoff: float) -> None:
         user_text = (
             f"⚠️ Technical issue, restarting "
             f"(attempt {attempt}, retrying in {backoff:.0f}s). "
             "Please resend your last message in a moment."
         )
-        if engine is not None and engine._turn.active_chats:
-            for chat_id in engine._turn.active_chats:
-                try:
-                    await dispatcher.bot.send_message(chat_id=chat_id, text=user_text)
-                except Exception:
-                    log.warning("crash notify to %s failed", chat_id, exc_info=True)
-        owner_chat = config.owner_id
-        if owner_chat not in (engine._turn.active_chats if engine else set()):
-            try:
-                await dispatcher.bot.send_message(
-                    chat_id=owner_chat,
-                    text=f"CC error (attempt {attempt}). Check logs.",
-                )
-            except Exception:
-                log.warning("crash notify to owner failed", exc_info=True)
+        active = engine._turn.active_chats if engine else set()
+        for chat_id in active:
+            await _notify_owner(user_text, chat_id)
+        if config.owner_id not in active:
+            await _notify_owner(
+                f"CC error (attempt {attempt}). Check logs.", config.owner_id
+            )
 
     async def _on_cc_stale_session(stale_id: str) -> None:
         try:
             config.session_id_path.unlink(missing_ok=True)
         except OSError:
             log.exception("failed to delete stale session_id file")
-        try:
-            await dispatcher.bot.send_message(
-                chat_id=config.owner_id,
-                text=(
-                    "ℹ️ Previous Claude Code session expired — "
-                    "starting a fresh one. Your last message may need "
-                    "to be resent."
-                ),
-            )
-        except Exception:
-            log.warning("stale-session notify to owner failed", exc_info=True)
+        await _notify_owner(
+            "ℹ️ Previous Claude Code session expired — starting a fresh one. "
+            "Your last message may need to be resent."
+        )
 
     async def _on_cc_giveup(crash_count: int) -> None:
         user_text = (
             f"⚠️ Shutting down — Claude Code failed {crash_count} times. "
             "The operator needs to intervene."
         )
-        chats_to_notify: set[int] = set()
-        if engine is not None and engine._turn.active_chats:
-            chats_to_notify.update(engine._turn.active_chats)
+        chats_to_notify: set[int] = set(engine._turn.active_chats if engine else set())
         chats_to_notify.add(config.owner_id)
         for chat_id in chats_to_notify:
-            try:
-                await dispatcher.bot.send_message(chat_id=chat_id, text=user_text)
-            except Exception:
-                log.warning("giveup notify to %s failed", chat_id, exc_info=True)
+            await _notify_owner(user_text, chat_id)
 
     # Engine is declared here but constructed after dispatcher.
     engine = None  # type: ignore[assignment]
 
     worker = CcWorker(
-        spec, config,
+        spec,
+        config,
         heartbeat=ctx.heartbeat,
         on_crash=_on_cc_crash,
         on_giveup=_on_cc_giveup,
@@ -615,68 +800,98 @@ async def _async_main() -> None:
     await worker.start()
     await worker.supervise()
 
-    # The dispatcher owns the bot, so we build it first, then hand a
-    # closure into the engine for the typing indicator.
-    dispatcher = TelegramDispatcher(  # type: ignore[arg-type]
-        config,
-        db,
-        engine=None,
-        chat_titles=chat_titles,
-        rate_limiter=stores.rate_limiter,
-        memory_store=stores.memory,
-        external_mcp_tools=tuple(mcp_allowed_tools),
-        router=NemoRouter(
-            RouterConfig(
-                enabled=config.router_enabled,
-                claude_bin=config.claude_code_bin,
-                model=config.router_model,
-                direct_replies=config.router_direct_replies,
-            )
-        ),
-    )
+    # The dispatcher owns the Telegram bot. In app-only mode (no token) we skip
+    # it entirely — the phone app is the sole interface and inbound/outbound
+    # both flow through app_api + send_message's app broadcast.
+    dispatcher = None
+    if not config.app_only:
+        dispatcher = TelegramDispatcher(  # type: ignore[arg-type]
+            config,
+            db,
+            engine=None,
+            chat_titles=chat_titles,
+            rate_limiter=stores.rate_limiter,
+            memory_store=stores.memory,
+            external_mcp_tools=tuple(mcp_allowed_tools),
+            router=NemoRouter(
+                RouterConfig(
+                    enabled=config.router_enabled,
+                    claude_bin=config.claude_code_bin,
+                    model=config.router_model,
+                    direct_replies=config.router_direct_replies,
+                )
+            ),
+        )
 
     async def _typing(chat_id: int) -> None:
+        # Typing indicator is a Telegram concept; the app shows its own
+        # "thinking" state. No-op in app-only mode.
+        if dispatcher is None or dispatcher.bot is None:
+            return
         t0 = time.monotonic()
         try:
             ok = await dispatcher.bot.send_chat_action(chat_id=chat_id, action="typing")
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             log.debug(
                 "send_chat_action chat=%s returned=%r elapsed=%dms",
-                chat_id, ok, elapsed_ms,
+                chat_id,
+                ok,
+                elapsed_ms,
             )
         except Exception as exc:
             log.warning("send_chat_action failed for chat %s: %s", chat_id, exc)
 
     async def _error_notify(chat_id: int, text: str) -> None:
-        try:
-            await dispatcher.bot.send_message(chat_id=chat_id, text=text)
-        except Exception as exc:
-            log.warning("error notify failed for chat %s: %s", chat_id, exc)
+        await _notify_owner(text, chat_id)
+
+    from .models import ChatMessage
+    from .tool_groups import build_turn_tools
+
+    def _default_runtime_profile(cm: ChatMessage) -> dict:
+        """Tool set for autonomous turns (reminder/webhook/app) that arrive with
+        no routed profile — owner-gated so a non-owner turn never gets the
+        OWNER_ONLY tools (run_code / phone / SQL), and so a turn can't inherit
+        the previous turn's tools."""
+        return {
+            "model": None,
+            "mcp_allowed_tools": build_turn_tools(
+                cm.text,
+                external_tools=tuple(mcp_allowed_tools),
+                is_owner=(cm.user_id == config.owner_id),
+            ),
+        }
 
     engine = Engine(
-        worker, config,
+        worker,
+        config,
         debounce_ms=config.debounce_ms,
         db=db,
         typing_action=_typing,
         error_notify=_error_notify,
         ctx=ctx,
+        default_runtime_profile=_default_runtime_profile,
     )
     await engine.start()
     if app_api is not None:
         app_api.set_engine(engine)
 
     reminder_task = asyncio.create_task(
-        _reminder_loop(db, engine), name="pyclaudir-reminders",
+        _reminder_loop(db, engine),
+        name="pyclaudir-reminders",
     )
 
-    dispatcher.engine = engine
-    ctx.bot = dispatcher.bot
+    if dispatcher is not None:
+        dispatcher.engine = engine
+        ctx.bot = dispatcher.bot
     # Wire send_message → engine notification so the typing indicator
     # stops the moment the user has the message in their hand, not when
     # the entire CC turn officially ends.
     ctx.on_chat_replied = engine.notify_chat_replied
-    await dispatcher.start()
-    log.info("pyclaudir is live")
+    if dispatcher is not None:
+        await dispatcher.start()
+    log.info(
+        "pyclaudir is live (%s)", "app-only" if config.app_only else "telegram+app"
+    )
 
     stop_event = asyncio.Event()
     _install_signal_handlers(worker, stop_event)
@@ -689,9 +904,10 @@ async def _async_main() -> None:
         if worker.session_id:
             config.session_id_path.write_text(worker.session_id)
         reminder_task.cancel()
-        await dispatcher.stop()
-        if dispatcher.router is not None:
-            await dispatcher.router.close()
+        if dispatcher is not None:
+            await dispatcher.stop()
+            if dispatcher.router is not None:
+                await dispatcher.router.close()
         await engine.stop()
         await worker.stop()
         if app_api is not None:

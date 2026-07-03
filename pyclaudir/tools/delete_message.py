@@ -16,13 +16,17 @@ class DeleteMessageArgs(BaseModel):
 
 class DeleteMessageTool(BaseTool):
     name = "delete_message"
-    description = "Delete a Telegram message by id. Bots can only delete recent messages."
+    description = (
+        "Delete a Telegram message by id. Bots can only delete recent messages."
+    )
     args_model = DeleteMessageArgs
 
     async def run(self, args: DeleteMessageArgs) -> ToolResult:
         if self.ctx.bot is None:
             return ToolResult(content="bot not configured", is_error=True)
-        await self.ctx.bot.delete_message(chat_id=args.chat_id, message_id=args.message_id)
+        await self.ctx.bot.delete_message(
+            chat_id=args.chat_id, message_id=args.message_id
+        )
         log_delete(
             chat_id=args.chat_id,
             chat_titles=self.ctx.chat_titles,

@@ -4,23 +4,36 @@ import 'package:local_auth/error_codes.dart' as auth_error;
 import 'package:local_auth_android/local_auth_android.dart';
 import 'package:flutter/services.dart';
 
-/// Biometric cascade: face → fingerprint → PIN/password.
+/// Biometric cascade: face → fingerprint → device PIN/pattern/password.
+/// Fails CLOSED: if no system-verified method is available, the action is
+/// denied. (A previous in-app "PIN dialog" fallback accepted any input and
+/// was a fake gate — never reintroduce it.)
 class BiometricService {
   static final _auth = LocalAuthentication();
   static int _failCount = 0;
 
-  static const _sensitiveVerbs = {
-    'camera', 'type', 'open', 'install',
-  };
+  // Phone-control verbs that require a fresh biometric: capturing the camera or
+  // typing arbitrary text into a focused field. ('install' was removed — OTA
+  // install never routes through here; it's protected by APK signature pinning
+  // + the OS installer prompt. 'tg_msg' is deliberately NOT gated so it works
+  // hands-free in a background voice session; its protection is the
+  // authenticated, owner-only server path.)
+  // 'camera' is NOT gated: the `look` vision tool only fires on an explicit
+  // spoken request ("what is this?"), so the request itself is the consent.
+  // 'type' is NOT gated: MIUI local_auth failures broke voice functionality
+  // for no real gain — server path is owner-authenticated, TLS, and cert-pinned.
+  // 'screenshot' IS gated: screen capture can expose sensitive data (banking,
+  // messages) and doesn't need to be instant-response like camera.
+  static const _sensitiveVerbs = <String>{'screenshot', 'type'};
 
   static bool isSensitive(String command) =>
       _sensitiveVerbs.contains(command.split(' ').first.toLowerCase());
 
   static Future<bool> authenticate(BuildContext context, String reason) async {
-    if (_failCount >= 3) return _passwordFallback(context, reason);
+    if (_failCount >= 3) return _deviceCreds(reason);
     try {
       final canCheck = await _auth.canCheckBiometrics || await _auth.isDeviceSupported();
-      if (!canCheck) return _passwordFallback(context, reason);
+      if (!canCheck) return _deviceCreds(reason);
 
       final bios = await _auth.getAvailableBiometrics();
 
@@ -41,11 +54,11 @@ class BiometricService {
         _failCount++;
       }
 
-      // 3. Device credentials (PIN/pattern/password)
-      return _deviceCreds(context, reason);
+      // 3. Device credentials (PIN/pattern/password — system-verified)
+      return _deviceCreds(reason);
     } on PlatformException catch (e) {
       if (e.code == auth_error.notAvailable || e.code == auth_error.notEnrolled) {
-        return _deviceCreds(context, reason);
+        return _deviceCreds(reason);
       }
       return false;
     }
@@ -67,44 +80,19 @@ class BiometricService {
     } catch (_) { return false; }
   }
 
-  static Future<bool> _deviceCreds(BuildContext context, String reason) async {
+  static Future<bool> _deviceCreds(String reason) async {
     try {
-      return await _auth.authenticate(
+      final ok = await _auth.authenticate(
         localizedReason: reason,
         authMessages: const [
           AndroidAuthMessages(signInTitle: 'Nemo confirmation', cancelButton: 'Deny'),
         ],
         options: const AuthenticationOptions(biometricOnly: false, stickyAuth: true),
       );
-    } catch (_) { return _passwordFallback(context, reason); }
-  }
-
-  static Future<bool> _passwordFallback(BuildContext context, String reason) async {
-    if (!context.mounted) return false;
-    final ctrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E2E),
-        title: const Text('Confirm action', style: TextStyle(color: Colors.white)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(reason, style: const TextStyle(color: Colors.white70, fontSize: 13)),
-          const SizedBox(height: 12),
-          TextField(
-            controller: ctrl, obscureText: true, autofocus: true,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(labelText: 'PIN / password',
-                labelStyle: TextStyle(color: Colors.white54)),
-          ),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Deny')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Confirm')),
-        ],
-      ),
-    );
-    if (ok == true) { _failCount = 0; return true; }
-    return false;
+      if (ok) _failCount = 0;
+      return ok;
+    } catch (_) {
+      return false;
+    }
   }
 }

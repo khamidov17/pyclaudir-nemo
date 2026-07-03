@@ -30,6 +30,7 @@ async def transcribe(audio_path: Path) -> str | None:
 
     try:
         import asyncio
+
         return await asyncio.to_thread(_groq_transcribe, audio_path)
     except Exception as exc:
         log.warning("STT transcription failed: %s", exc)
@@ -38,6 +39,7 @@ async def transcribe(audio_path: Path) -> str | None:
 
 def _groq_transcribe(audio_path: Path) -> str:
     import httpx
+
     with open(audio_path, "rb") as f:
         resp = httpx.post(
             "https://api.groq.com/openai/v1/audio/transcriptions",

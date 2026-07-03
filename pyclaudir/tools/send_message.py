@@ -82,9 +82,8 @@ class SendMessageTool(BaseTool):
     args_model = SendMessageArgs
 
     async def run(self, args: SendMessageArgs) -> ToolResult:
-        if self.ctx.bot is None:
-            return ToolResult(content="bot not configured", is_error=True)
-
+        # No early bot-None bail: in app-only mode there's no Telegram bot, but
+        # the message still must reach the phone via the app broadcast below.
         scrubbed_text = scrub(args.text)
         if scrubbed_text != args.text:
             log.warning(
@@ -111,8 +110,11 @@ class SendMessageTool(BaseTool):
         # This ensures the app gets the reply even if Telegram send fails
         # (e.g. user never opened the Telegram bot DM).
         import json as _json
+
         if self.ctx.app_clients:
-            payload = _json.dumps({"type": "message", "text": scrubbed_text, "chat_id": args.chat_id})
+            payload = _json.dumps(
+                {"type": "message", "text": scrubbed_text, "chat_id": args.chat_id}
+            )
             dead: set = set()
             for ws in list(self.ctx.app_clients):
                 try:
@@ -141,9 +143,11 @@ class SendMessageTool(BaseTool):
                 data={"chat_id": args.chat_id, "message_ids": []},
             )
 
-        # Send to Telegram — may fail if user hasn't opened bot DM yet.
+        # Send to Telegram — may fail if user hasn't opened bot DM yet. Skipped
+        # entirely in app-only mode (no bot): the app already has the reply.
         message_ids: list[int] = []
-        for i, body in enumerate(bodies):
+        tg_bodies = bodies if self.ctx.bot is not None else []
+        for i, body in enumerate(tg_bodies):
             reply_to = args.reply_to_message_id if i == 0 else None
             try:
                 sent = await self.ctx.bot.send_message(
@@ -155,7 +159,10 @@ class SendMessageTool(BaseTool):
                 message_ids.append(sent.message_id)
                 log.info(
                     "hot-path stage=delivered chat=%s msg=%s chunk=%d/%d",
-                    args.chat_id, sent.message_id, i + 1, len(bodies),
+                    args.chat_id,
+                    sent.message_id,
+                    i + 1,
+                    len(bodies),
                 )
                 if i == 0 and self.ctx.on_chat_replied is not None:
                     try:

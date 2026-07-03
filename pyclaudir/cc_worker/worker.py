@@ -170,6 +170,10 @@ class CcWorker:
         self._stream_log_path: Path | None = None
         self._stderr_log: IO[str] | None = None
         self._stderr_log_path: Path | None = None
+        #: Optional streaming callback set by engine before each turn (P3 voice
+        #: weave-in). Fired on every text block and once (final=True) at turn
+        #: end. Cleared in _on_result_event so it never leaks across turns.
+        self._on_chunk: object | None = None
 
     @property
     def session_id(self) -> str | None:
@@ -327,6 +331,7 @@ class CcWorker:
         self._pending_model = model
         self._pending_model_deferred = False
         self._supervisor_abort_reason = "model-switch"
+        self._on_chunk = None
         asyncio.create_task(self._terminate_proc(), name="cc-model-switch")
 
     def defer_model_switch(self, model: str) -> None:
@@ -562,9 +567,7 @@ class CcWorker:
                     intentional,
                 )
                 if self._pending_runtime is not None:
-                    self.spec = dataclasses.replace(
-                        self.spec, **self._pending_runtime
-                    )
+                    self.spec = dataclasses.replace(self.spec, **self._pending_runtime)
                     log.info(
                         "applying pending runtime profile: %s",
                         sorted(self._pending_runtime),
@@ -610,6 +613,7 @@ class CcWorker:
                 log.debug("on_stale_session callback failed", exc_info=True)
         self.spec = dataclasses.replace(self.spec, session_id=None)
         self._session_id = None
+        self._on_chunk = None
         await asyncio.sleep(self._crash_backoff_base)
         await self._terminate_proc()
         await self.start()
@@ -649,6 +653,7 @@ class CcWorker:
                 await self._on_crash(attempt, backoff)
             except Exception:
                 log.debug("on_crash callback failed", exc_info=True)
+        self._on_chunk = None
         await asyncio.sleep(backoff)
         await self._terminate_proc()
         await self.start()
@@ -843,6 +848,7 @@ class CcWorker:
         sentinel.stderr_tail = list(self._stderr_tail)
         self._result_queue.put_nowait(sentinel)
         self._current_turn = None
+        self._on_chunk = None  # don't fire a stale voice-session callback after restart
         self._tool_error_abort_task = asyncio.create_task(
             self._terminate_proc(),
             name="cc-tool-error-abort",
@@ -948,6 +954,8 @@ class CcWorker:
             if txt:
                 self._current_turn.text_blocks.append(txt)
                 log_cc_text(txt)
+                if self._on_chunk is not None:
+                    asyncio.create_task(self._on_chunk(txt, False))
         elif btype == "tool_use":
             self._handle_assistant_tool_use(block)
         elif btype == "thinking":
@@ -1024,6 +1032,9 @@ class CcWorker:
         # Turn finished cleanly; defuse the watchdog so a stale deadline
         # from this turn can't trip the breaker after the fact.
         self._cancel_tool_error_watchdog()
+        if self._on_chunk is not None:
+            asyncio.create_task(self._on_chunk("", True))
+            self._on_chunk = None
         self._result_queue.put_nowait(self._current_turn)
         self._current_turn = None
 

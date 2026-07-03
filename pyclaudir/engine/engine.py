@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from ..cc_failure_classifier import CcFailureClassification, classify_cc_failure
 from ..config import Config
 from ..db.messages import fetch_recent_messages
+from ..error_journal import log_error
 from ..models import ChatMessage
 from .format import format_messages_with_context
 
@@ -111,10 +112,19 @@ class Engine:
         typing_action: TypingAction | None = None,
         error_notify: ErrorNotify | None = None,
         ctx: Any = None,
+        default_runtime_profile: Any = None,
     ) -> None:
         self._worker = worker
         self._debounce = debounce_ms / 1000.0
         self._db = db
+        self._owner_id = config.owner_id
+        #: Callable[[ChatMessage], dict | None] — computes a deterministic tool
+        #: profile for turns that arrive WITHOUT one (reminder/webhook/app
+        #: submits). Without it those turns would inherit whatever tools the last
+        #: turn installed, so an owner code turn could leave run_code live for a
+        #: later autonomous/webhook turn. Set by __main__ where owner_id +
+        #: external tools are known.
+        self._default_runtime_profile = default_runtime_profile
         #: Shared ToolContext. Used only to flag app-originated turns so
         #: ``send_message`` can suppress the Telegram echo for them.
         self._ctx = ctx
@@ -139,6 +149,10 @@ class Engine:
         self._typing = TypingState()
         self._pending: list[ChatMessage] = []
         self._pending_runtime_profiles: list[dict | None] = []
+        #: Set to wake the reminder loop immediately instead of waiting for its
+        #: next poll — the voice process pokes it (via app_api /internal/kick)
+        #: right after inserting a delegated task, so delegation feels instant.
+        self.reminder_kick = asyncio.Event()
         #: Per-submit ``on_success`` hooks queued alongside ``_pending``.
         #: Transferred to ``_turn_callbacks`` when the buffer drains into
         #: a turn (``_kick`` / ``_maybe_inject``). The reminder loop hangs
@@ -151,6 +165,19 @@ class Engine:
         #: loop) sees the reminder still ``pending`` and retries on the
         #: next 60s tick.
         self._turn_callbacks: list[Callable[[], Awaitable[None]]] = []
+        #: Symmetric ``on_failure`` hooks. Fired (not dropped) when the turn
+        #: fails, so a caller that moved its row to an in-flight state on submit
+        #: (the reminder loop's ``firing`` claim) can roll it back. Queued and
+        #: drained exactly like the success hooks; cleared without firing on a
+        #: clean turn.
+        self._pending_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
+        self._turn_failure_callbacks: list[Callable[[], Awaitable[None]]] = []
+        #: P3 voice weave-in: on_chunk callback queued per submit(), applied to
+        #: the worker before each turn. Only the last queued one is used per turn.
+        self._pending_on_chunk: object | None = None
+        #: Written by the /internal/kick handler when VOICE_STREAM_BRAIN=1; read
+        #: and cleared by _fire_one_reminder to build the on_chunk coroutine.
+        self._pending_voice_session_id: str = ""
         self._lock = asyncio.Lock()
         self._is_processing = asyncio.Event()
         self._debounce_task: asyncio.Task[None] | None = None
@@ -186,6 +213,8 @@ class Engine:
         # loop, which is the right behaviour for a clean shutdown.
         self._pending_callbacks = []
         self._turn_callbacks = []
+        self._pending_failure_callbacks = []
+        self._turn_failure_callbacks = []
 
     # ------------------------------------------------------------------
     # Inbound
@@ -196,7 +225,9 @@ class Engine:
         msg: ChatMessage,
         *,
         on_success: Callable[[], Awaitable[None]] | None = None,
+        on_failure: Callable[[], Awaitable[None]] | None = None,
         runtime_profile: dict | None = None,
+        on_chunk: object | None = None,
     ) -> None:
         """Add an inbound message to the pending buffer.
 
@@ -219,6 +250,10 @@ class Engine:
             self._pending_runtime_profiles.append(runtime_profile)
             if on_success is not None:
                 self._pending_callbacks.append(on_success)
+            if on_failure is not None:
+                self._pending_failure_callbacks.append(on_failure)
+            if on_chunk is not None:
+                self._pending_on_chunk = on_chunk
 
         if self._is_processing.is_set():
             await self._maybe_inject()
@@ -245,6 +280,10 @@ class Engine:
             self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
+            self._turn_failure_callbacks.extend(self._pending_failure_callbacks)
+            self._pending_failure_callbacks = []
+            turn_on_chunk = self._pending_on_chunk
+            self._pending_on_chunk = None
             self._is_processing.set()
         # Skip synthetic reminders (mid=0) — no human waiting on them, so
         # the turn-start typing indicator should be silent for
@@ -256,8 +295,14 @@ class Engine:
         log.info("starting turn with %d msgs", len(batch))
         await self._announce_turn_start(batch)
         runtime_profile = self._select_runtime_profile(runtime_profiles)
+        if runtime_profile is None and self._default_runtime_profile is not None:
+            # No transport supplied a profile (reminder/webhook/app turn) —
+            # compute a deterministic, source-gated one so this turn can't
+            # inherit the previous turn's tool set (e.g. a leftover run_code).
+            runtime_profile = self._default_runtime_profile(batch[-1])
         if runtime_profile:
             await self._worker.apply_runtime(**runtime_profile)
+        self._worker._on_chunk = turn_on_chunk
         await self._worker.send(xml)
 
     async def _announce_turn_start(self, batch: list[ChatMessage]) -> None:
@@ -281,11 +326,28 @@ class Engine:
 
     def _mark_app_origin(self, batch: list[ChatMessage]) -> None:
         """Flag chats whose turn came from the mobile app so ``send_message``
-        won't echo the reply into Telegram. Overwritten every turn."""
+        won't echo the reply into Telegram, and mark whether this turn was
+        started by a live user (vs the scheduler). Overwritten every turn."""
         if self._ctx is not None:
             self._ctx.app_origin_chats = {
                 m.chat_id for m in batch if getattr(m, "source", "telegram") == "app"
             }
+            # A turn is user-initiated unless EVERY message is autonomous (a
+            # scheduler reminder or an external webhook event). Read actions
+            # (screen/camera) check this so a briefing or webhook can never
+            # silently capture the phone.
+            self._ctx.user_initiated = any(
+                getattr(m, "source", "telegram") not in ("reminder", "webhook")
+                for m in batch
+            )
+            # Owner backstop for run_code: True only when EVERY message in the
+            # turn is from the owner (fail closed on a mixed batch). A voice-
+            # delegated task fires as a reminder with user_id=owner (so coding
+            # works); a webhook (user_id=-1) or any non-owner message in the
+            # batch makes run_code refuse even if it slipped into the allowed set.
+            self._ctx.owner_turn = bool(batch) and all(
+                getattr(m, "user_id", 0) == self._owner_id for m in batch
+            )
 
     async def _build_turn_prompt(self, batch: list[ChatMessage]) -> str:
         """Render the turn XML, prepending any compaction-restore block."""
@@ -314,6 +376,8 @@ class Engine:
             self._pending_runtime_profiles = []
             self._turn_callbacks.extend(self._pending_callbacks)
             self._pending_callbacks = []
+            self._turn_failure_callbacks.extend(self._pending_failure_callbacks)
+            self._pending_failure_callbacks = []
         xml = await format_messages_with_context(batch, self._db)
         await self._worker.inject(xml)
 
@@ -713,6 +777,16 @@ class Engine:
                 len(self._turn_callbacks),
             )
             self._turn_callbacks = []
+        # Fire the failure hooks so a caller that marked its row in-flight on
+        # submit (the reminder loop's ``firing`` claim) rolls it back to
+        # ``pending`` and the next tick re-fires it — see #22.
+        failure_callbacks = self._turn_failure_callbacks
+        self._turn_failure_callbacks = []
+        for cb in failure_callbacks:
+            try:
+                await cb()
+            except Exception:
+                log.exception("turn-failure callback failed")
         await self._notify_error_to_chats(
             "⚠️ Sorry, I ran into a temporary issue. "
             "I'm restarting and will be back in a few seconds."
@@ -757,6 +831,8 @@ class Engine:
         """
         callbacks = self._turn_callbacks
         self._turn_callbacks = []
+        # The turn succeeded — the matching failure hooks must NOT run.
+        self._turn_failure_callbacks = []
         for cb in callbacks:
             try:
                 await cb()
@@ -799,6 +875,7 @@ class Engine:
         # rate-limited AND dropped_text, but we only notify once per turn.
         stderr_classification = classify_cc_failure(result.stderr_tail)
         if stderr_classification is not None:
+            log_error("engine/cc_failure", stderr_classification.user_message, result.stderr_tail or "")
             await self._notify_error_to_chats(stderr_classification.user_message)
 
         if result.dropped_text:

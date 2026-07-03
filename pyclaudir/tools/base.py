@@ -76,7 +76,9 @@ class ToolContext:
     #: typing-indicator set so "typing..." vanishes as soon as the user has
     #: the message in their hand — not when the entire CC turn officially
     #: ends, which can be 5-10 seconds later.
-    on_chat_replied: Any = None  # Callable[[int], None] | None — kept untyped to avoid an import
+    on_chat_replied: Any = (
+        None  # Callable[[int], None] | None — kept untyped to avoid an import
+    )
     #: Connected mobile app WebSocket clients. send_message broadcasts to these
     #: in addition to Telegram so the app sees Nemo's replies in real-time.
     app_clients: set = field(default_factory=set)
@@ -87,6 +89,20 @@ class ToolContext:
     app_origin_chats: set = field(default_factory=set)
     #: Phone action broker — set when NEMO_APP_TOKEN is configured.
     phone_broker: Any = None
+    #: Meeting-recording store (audio + transcripts). Lets the engine recall a
+    #: recorded meeting ("summarize what we recorded") via the recordings tools.
+    #: None when no data_dir is configured (tests).
+    recording_store: Any = None
+    #: True when the current turn was started by a live user message; False for
+    #: scheduler-fired (reminder/briefing) turns. Read actions (screenshot,
+    #: ui_tree, camera) are refused when False so Nemo can never read the
+    #: phone's screen/apps on its own. Set per-turn by the engine.
+    user_initiated: bool = True
+    #: True when a message in the current turn is from the owner. ``run_code``
+    #: refuses when False — a deterministic backstop so a non-owner/webhook turn
+    #: can never execute code even if the allowed-tool set leaks it. Set per-turn
+    #: by the engine; defaults True so non-engine callers (tests) are unaffected.
+    owner_turn: bool = True
 
 
 @dataclass
@@ -107,7 +123,9 @@ class ToolResult:
     content: str
     data: dict[str, Any] | None = None
     is_error: bool = False
-    image_path: Any = None  # pathlib.Path | None — left untyped to keep this module import-light
+    image_path: Any = (
+        None  # pathlib.Path | None — left untyped to keep this module import-light
+    )
 
 
 class BaseTool(ABC):

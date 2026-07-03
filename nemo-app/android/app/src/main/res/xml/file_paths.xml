@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Verified APK downloads handed to the package installer -->
+    <cache-path name="apk" path="apk/" />
+</paths>

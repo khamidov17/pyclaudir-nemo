@@ -121,6 +121,72 @@ async def test_worker_failure_discards_callback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_failure_fires_on_worker_failure() -> None:
+    """Symmetric to on_success: a worker crash must FIRE the on_failure hook so
+    the reminder loop can roll its claimed (``firing``) row back to ``pending``
+    and the next tick re-fires it."""
+    worker = FakeWorker()
+    eng = Engine(worker, _CFG, debounce_ms=20)
+    succeeded: list[int] = []
+    failed: list[int] = []
+
+    async def on_success() -> None:
+        succeeded.append(1)
+
+    async def on_failure() -> None:
+        failed.append(1)
+
+    await eng.start()
+    try:
+        await eng.submit(
+            _msg("hi", mid=1), on_success=on_success, on_failure=on_failure
+        )
+        await asyncio.sleep(0.08)
+        assert worker.sent
+
+        worker.feed(RuntimeError("cc subprocess wedged"))
+        await asyncio.sleep(0.05)
+        assert failed == [1], "on_failure did not fire on worker crash"
+        assert succeeded == [], "on_success fired despite failure"
+    finally:
+        await eng.stop()
+
+
+@pytest.mark.asyncio
+async def test_on_failure_not_fired_on_clean_turn() -> None:
+    """A clean turn fires on_success and must NOT fire the matching on_failure
+    (otherwise a delivered reminder would be reset and delivered twice)."""
+    worker = FakeWorker()
+    eng = Engine(worker, _CFG, debounce_ms=20)
+    succeeded: list[int] = []
+    failed: list[int] = []
+
+    async def on_success() -> None:
+        succeeded.append(1)
+
+    async def on_failure() -> None:
+        failed.append(1)
+
+    await eng.start()
+    try:
+        await eng.submit(
+            _msg("hi", mid=1), on_success=on_success, on_failure=on_failure
+        )
+        await asyncio.sleep(0.08)
+        worker.feed(
+            TurnResult(
+                control=ControlAction(action="stop", reason="ok"),
+                dropped_text=False,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert succeeded == [1]
+        assert failed == [], "on_failure fired on a clean turn"
+    finally:
+        await eng.stop()
+
+
+@pytest.mark.asyncio
 async def test_recoverable_dropped_text_holds_callback_until_retry() -> None:
     """Recoverable dropped-text: turn continues with an injected
     ``<error>``. Callback must wait for the retry's outcome, not fire
